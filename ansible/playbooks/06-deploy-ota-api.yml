@@ -1,0 +1,185 @@
+---
+- name: "Epic 4: Deploy FastAPI OTA Backend (Connected to Postgres & Redis)"
+  hosts: mgmt
+  become: false
+  vars_files:
+    - ../secrets.yml
+  vars:
+    mgmt_internal_ip: "172.16.10.1"
+  tags:
+    - ota-backend
+  tasks:
+    - name: 1. Insert initial dummy firmware release (v1.0.0) into PostgreSQL
+      shell: |
+        sudo docker exec ota-postgres psql -U ota_admin -d ota_db -c "
+        INSERT INTO firmware_releases (version, s3_url, sha256_hash, file_size_bytes, release_notes)
+        VALUES ('1.0.0', 'http://172.16.10.1:8000/firmware/esp32-v1.0.0.bin', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 524288, 'Initial Baseline Firmware')
+        ON CONFLICT (version) DO NOTHING;"
+
+    - name: 2. Deploy Secret, ConfigMap (FastAPI app), and Deployment to Active & Standby
+      shell: |
+        cat << 'MANIFEST' | kubectl --context={{ item }} apply -f -
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: ota-db-secret
+          namespace: default
+        type: Opaque
+        stringData:
+          PG_HOST: "{{ mgmt_internal_ip }}"
+          PG_USER: "ota_admin"
+          PG_PASS: "{{ pg_password }}"
+          PG_DB: "ota_db"
+          REDIS_HOST: "{{ mgmt_internal_ip }}"
+          REDIS_PASS: "{{ redis_password }}"
+        ---
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ota-fastapi-code
+          namespace: default
+        data:
+          main.py: |
+            import os, json, psycopg2, redis
+            from fastapi import FastAPI, HTTPException
+            from pydantic import BaseModel
+
+            app = FastAPI(title="ESP32 OTA API Server")
+            CLUSTER_NAME = os.getenv("CLUSTER_NAME", "unknown")
+
+            def get_db():
+                return psycopg2.connect(
+                    host=os.getenv("PG_HOST"),
+                    database=os.getenv("PG_DB"),
+                    user=os.getenv("PG_USER"),
+                    password=os.getenv("PG_PASS"),
+                    connect_timeout=3
+                )
+
+            def get_redis():
+                return redis.Redis(
+                    host=os.getenv("REDIS_HOST"),
+                    port=6379,
+                    password=os.getenv("REDIS_PASS"),
+                    decode_responses=True,
+                    socket_timeout=2
+                )
+
+            class ReportPayload(BaseModel):
+                device_id: str
+                target_version: str
+                status: str
+                duration_ms: int = 1200
+                rssi: int = -55
+
+            @app.get("/health")
+            def health_check():
+                try:
+                    r = get_redis()
+                    r.ping()
+                    conn = get_db()
+                    conn.close()
+                    return {"status": "UP", "cluster": CLUSTER_NAME, "db": "CONNECTED", "redis": "CONNECTED"}
+                except Exception as e:
+                    raise HTTPException(status_code=503, detail=str(e))
+
+            @app.get("/ota/check")
+            def check_update(device_id: str = "esp32-dev-01", current_version: str = "0.9.0"):
+                r = get_redis()
+                cached = r.get("latest_firmware")
+                source = "REDIS_CACHE"
+
+                if not cached:
+                    source = "POSTGRES_DB"
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute("SELECT version, s3_url, sha256_hash, file_size_bytes FROM firmware_releases ORDER BY created_at DESC LIMIT 1;")
+                    row = cur.fetchone()
+                    cur.close()
+                    conn.close()
+                    if not row:
+                        raise HTTPException(status_code=404, detail="No firmware found")
+                    fw_data = {"version": row[0], "url": row[1], "sha256": row[2], "size": row[3]}
+                    r.setex("latest_firmware", 300, json.dumps(fw_data))
+                else:
+                    fw_data = json.loads(cached)
+
+                return {
+                    "handled_by_cluster": CLUSTER_NAME,
+                    "data_source": source,
+                    "device_id": device_id,
+                    "update_required": fw_data["version"] != current_version,
+                    "latest_firmware": fw_data
+                }
+
+            @app.post("/ota/report")
+            def report_status(payload: ReportPayload):
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO devices (device_id, current_version, updated_at)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (device_id) DO UPDATE SET current_version = EXCLUDED.current_version, updated_at = CURRENT_TIMESTAMP;
+                """, (payload.device_id, payload.target_version))
+                cur.execute("""
+                    INSERT INTO ota_deployment_history (device_id, target_version, status, duration_ms, handled_by_cluster)
+                    VALUES (%s, %s, %s, %s, %s);
+                """, (payload.device_id, payload.target_version, payload.status, payload.duration_ms, CLUSTER_NAME))
+                conn.commit()
+                cur.close()
+                conn.close()
+                return {"result": "RECORDED", "handled_by_cluster": CLUSTER_NAME}
+        ---
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ota-api-server
+          namespace: default
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: ota-api
+          template:
+            metadata:
+              labels:
+                app: ota-api
+            spec:
+              containers:
+              - name: ota-api
+                image: python:3.11-slim
+                command: ["/bin/sh", "-c"]
+                args:
+                  - pip install --no-cache-dir fastapi uvicorn psycopg2-binary redis pydantic &&
+                    uvicorn main:app --host 0.0.0.0 --port 80 --app-dir /app
+                ports:
+                - containerPort: 80
+                env:
+                - name: CLUSTER_NAME
+                  value: "{{ item }}"
+                envFrom:
+                - secretRef:
+                    name: ota-db-secret
+                volumeMounts:
+                - name: app-code
+                  mountPath: /app
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 80
+                  initialDelaySeconds: 10
+                  periodSeconds: 3
+              volumes:
+              - name: app-code
+                configMap:
+                  name: ota-fastapi-code
+        MANIFEST
+      loop:
+        - active
+        - standby
+
+    - name: 3. Force rollout restart to pick up new FastAPI pods
+      shell: kubectl --context={{ item }} rollout restart deployment ota-api-server
+      loop:
+        - active
+        - standby

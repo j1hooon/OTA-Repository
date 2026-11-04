@@ -1,0 +1,6 @@
+---
+- import_playbook: playbooks/01-mgmt-base.yml
+- import_playbook: playbooks/02-k3s-cluster.yml
+- import_playbook: playbooks/03-kubeconfig.yml
+- import_playbook: playbooks/04-control-tower.yml
+- import_playbook: playbooks/06-deploy-ota-api.yml
