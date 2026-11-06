@@ -6,6 +6,6 @@
     --node-ip {{ ansible_host }}
     --advertise-address {{ ansible_host }}
     --tls-san {{ ansible_host }}
-    --flannel-iface eth1
+    --flannel-iface {{ ota_clusters[inventory_hostname].flannel_iface | default('eth0') }}
   args:
     creates: /usr/local/bin/k3s

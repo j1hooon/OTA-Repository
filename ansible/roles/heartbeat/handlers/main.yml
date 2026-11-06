@@ -1,0 +1,6 @@
+---
+- name: Restart ota-heartbeat
+  systemd:
+    name: ota-heartbeat.service
+    daemon_reload: true
+    state: restarted

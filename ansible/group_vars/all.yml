@@ -2,8 +2,19 @@
 ansible_user: ubuntu
 ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
 
-clusters:
+control_dir: /opt/ota-control-tower
+mgmt_internal_ip: "172.16.10.1"
+ota_nodeport: 30080
+
+# 클러스터별 토폴로지 정의 (active / standby / 향후 dr 확장)
+ota_clusters:
   active:
-    ip: "172.16.100.1"
+    node_ip: "172.16.100.1"
+    pg_host: "172.16.10.1"
+    redis_host: "172.16.10.1"
+    flannel_iface: "eth1"
   standby:
-    ip: "172.16.200.1"
+    node_ip: "172.16.200.1"
+    pg_host: "172.16.10.1"
+    redis_host: "172.16.10.1"
+    flannel_iface: "eth1"

@@ -1,0 +1,27 @@
+global
+    log stdout format raw local0
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    timeout connect 3000ms
+    timeout client  50000ms
+    timeout server  50000ms
+
+frontend stats
+    bind *:8404
+    stats enable
+    stats uri /stats
+    stats refresh 5s
+
+frontend ota_api_front
+    bind *:8000
+    default_backend ota_clusters_back
+
+backend ota_clusters_back
+    option httpchk GET /health
+    http-check expect status 200
+    server active_cluster {{ ota_clusters.active.node_ip }}:{{ ota_nodeport }} check inter 1000ms fall 2 rise 2
+    server standby_cluster {{ ota_clusters.standby.node_ip }}:{{ ota_nodeport }} check inter 1000ms fall 2 rise 2 backup
