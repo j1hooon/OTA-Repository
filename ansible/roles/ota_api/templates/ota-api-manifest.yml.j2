@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ota-fastapi-code
+  namespace: default
+data:
+  main.py: |
+{{ lookup('file', 'main.py') | indent(4, true) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ota-api-server
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ota-api
+  template:
+    metadata:
+      labels:
+        app: ota-api
+    spec:
+      containers:
+      - name: ota-api
+        image: python:3.11-slim
+        command: ["/bin/sh", "-c"]
+        args:
+          - pip install --no-cache-dir fastapi==0.110.0 uvicorn==0.28.0 psycopg2-binary==2.9.9 redis==5.0.3 pydantic==2.6.4 &&
+            uvicorn main:app --host 0.0.0.0 --port 80 --app-dir /app
+        ports:
+        - containerPort: 80
+        env:
+        - name: CLUSTER_NAME
+          value: "{{ cluster_name }}"
+        envFrom:
+        - secretRef:
+            name: ota-db-secret
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 3
+      volumes:
+      - name: app-code
+        configMap:
+          name: ota-fastapi-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ota-api-svc
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: ota-api
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: {{ ota_nodeport }}

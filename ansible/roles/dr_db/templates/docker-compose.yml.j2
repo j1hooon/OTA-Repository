@@ -1,0 +1,14 @@
+services:
+  postgres-standby:
+    image: postgres:16-alpine
+    container_name: ota-dr-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - /opt/ota-dr-postgres/data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ota_admin -d ota_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

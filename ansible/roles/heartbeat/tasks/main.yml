@@ -1,0 +1,21 @@
+---
+- name: Deploy L7 Heartbeat Agent Script
+  template:
+    src: heartbeat_agent.sh.j2
+    dest: /usr/local/bin/ota-heartbeat-agent.sh
+    mode: '0755'
+  notify: Restart ota-heartbeat
+
+- name: Deploy Systemd Unit for Heartbeat Agent
+  template:
+    src: ota-heartbeat.service.j2
+    dest: /etc/systemd/system/ota-heartbeat.service
+    mode: '0644'
+  notify: Restart ota-heartbeat
+
+- name: Ensure ota-heartbeat service is enabled and started
+  systemd:
+    name: ota-heartbeat.service
+    daemon_reload: true
+    enabled: true
+    state: started

@@ -30,3 +30,16 @@ output "jenkins_iam_secret_access_key" {
   value     = module.s3_cloudfront.jenkins_iam_secret_access_key
   sensitive = true
 }
+
+output "dr_k3s_public_ip" {
+  value = module.compute.k3s_public_ip
+}
+
+output "dr_db_private_ip" {
+  value = module.compute.db_private_ip
+}
+
+output "effective_onprem_public_ip" {
+  description = "Verified On-Premise Primary Public IP registered to Route 53"
+  value       = local.effective_onprem_ip
+}

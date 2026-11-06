@@ -1,0 +1,81 @@
+---
+- name: Verify mgmt_tailscale_ip is non-empty before binding PostgreSQL
+  assert:
+    that:
+      - mgmt_tailscale_ip is defined
+      - mgmt_tailscale_ip | length > 0
+    fail_msg: "mgmt_tailscale_ip is empty! Make sure Tailscale is up before configuring control_tower."
+
+- name: Create Control Tower config directories (with ubuntu owner/mode)
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+  loop:
+    - "{{ control_dir }}"
+    - "{{ control_dir }}/postgres/init"
+    - "{{ control_dir }}/haproxy"
+    - "{{ control_dir }}/jenkins_home"
+
+- name: Ensure container data directories exist (preserve container-managed uid/mode)
+  file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ control_dir }}/postgres/data"
+    - "{{ control_dir }}/redis/data"
+
+- name: Copy PostgreSQL Schema Init Script
+  copy:
+    src: 01-init-schema.sql
+    dest: "{{ control_dir }}/postgres/init/01-init-schema.sql"
+    mode: '0644'
+
+- name: Render HAProxy Configuration
+  template:
+    src: haproxy.cfg.j2
+    dest: "{{ control_dir }}/haproxy/haproxy.cfg"
+    mode: '0644'
+  notify: Restart HAProxy
+
+- name: Render Docker Compose Configuration
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ control_dir }}/docker-compose.yml"
+    mode: '0600'
+  no_log: true
+
+- name: Start Control Tower Containers
+  command: docker compose up -d
+  args:
+    chdir: "{{ control_dir }}"
+  register: compose_up
+  changed_when: "'Started' in compose_up.stderr or 'Created' in compose_up.stderr or 'Recreated' in compose_up.stderr"
+
+- name: Wait for PostgreSQL TCP listener (post-initdb final server) and schema
+  command: >
+    docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
+    psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -tAc
+    "SELECT to_regclass('public.firmware_releases');"
+  register: pg_tcp_ready
+  until: pg_tcp_ready.rc == 0 and 'firmware_releases' in pg_tcp_ready.stdout
+  retries: 20
+  delay: 2
+  changed_when: false
+  no_log: true
+
+- name: Allow PostgreSQL Streaming Replication from Tailscale CGNAT (100.64.0.0/10)
+  lineinfile:
+    path: "{{ control_dir }}/postgres/data/pg_hba.conf"
+    line: "host replication ota_admin 100.64.0.0/10 scram-sha-256"
+    state: present
+  register: pg_hba_rule
+
+- name: Reload PostgreSQL configuration immediately over TCP
+  command: >
+    docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
+    psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -c "SELECT pg_reload_conf();"
+  when: pg_hba_rule.changed
+  no_log: true

@@ -36,10 +36,10 @@ resource "aws_cloudfront_origin_access_control" "firmware_oac" {
 
 # 4. CloudFront Distribution (글로벌 CDN)
 resource "aws_cloudfront_distribution" "firmware_cdn" {
-  enabled             = true
-  is_ipv6_enabled     = false
-  comment             = "OTA Firmware Binary CDN (${var.environment})"
-  price_class         = "PriceClass_200" # 한국, 일본(도쿄), 아시아 및 북미/유럽 포함 (비용 최적화)
+  enabled         = true
+  is_ipv6_enabled = false
+  comment         = "OTA Firmware Binary CDN (${var.environment})"
+  price_class     = "PriceClass_200" # 한국, 일본(도쿄), 아시아 및 북미/유럽 포함 (비용 최적화)
 
   origin {
     domain_name              = aws_s3_bucket.firmware.bucket_regional_domain_name
@@ -110,9 +110,9 @@ resource "aws_iam_access_key" "jenkins_uploader" {
 
 data "aws_iam_policy_document" "jenkins_s3_upload" {
   statement {
-    sid       = "AllowFirmwareUploadOnly"
-    effect    = "Allow"
-    actions   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
+    sid     = "AllowFirmwareUploadOnly"
+    effect  = "Allow"
+    actions = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
     resources = [
       aws_s3_bucket.firmware.arn,
       "${aws_s3_bucket.firmware.arn}/*"

@@ -1,0 +1,58 @@
+---
+- name: Wait for PostgreSQL TCP listener before inserting baseline firmware
+  become: true
+  command: >
+    docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
+    psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -tAc
+    "SELECT to_regclass('public.firmware_releases');"
+  register: pg_ready
+  until: pg_ready.rc == 0 and 'firmware_releases' in pg_ready.stdout
+  retries: 15
+  delay: 2
+  changed_when: false
+  no_log: true
+
+- name: Insert initial baseline firmware (v1.0.0) into PostgreSQL over TCP
+  become: true
+  command: >
+    docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
+    psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -c
+    "INSERT INTO firmware_releases (version, s3_url, sha256_hash, file_size_bytes, release_notes)
+     VALUES ('1.0.0', 'http://172.16.10.1:8000/firmware/esp32-v1.0.0.bin',
+             'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 524288, 'Initial Baseline Firmware')
+     ON CONFLICT (version) DO NOTHING;"
+  register: pg_insert
+  changed_when: "'INSERT 0 1' in pg_insert.stdout"
+  no_log: true
+
+- name: Deploy ota-db-secret to each target cluster
+  shell: |
+    cat << 'SECRET_EOF' | kubectl --context={{ item.key }} apply -f -
+    {{ lookup('template', 'ota-api-secret.yml.j2') }}
+    SECRET_EOF
+  vars:
+    cluster_name: "{{ item.key }}"
+    cluster_cfg: "{{ item.value }}"
+  loop: "{{ ota_clusters | dict2items }}"
+  register: secret_manifest
+  changed_when: "'configured' in secret_manifest.stdout or 'created' in secret_manifest.stdout"
+  no_log: true
+
+- name: Deploy FastAPI ConfigMap, Deployment, and Service (ota-api-svc)
+  shell: |
+    cat << 'MANIFEST_EOF' | kubectl --context={{ item.key }} apply -f -
+    {{ lookup('template', 'ota-api-manifest.yml.j2') }}
+    MANIFEST_EOF
+  vars:
+    cluster_name: "{{ item.key }}"
+    cluster_cfg: "{{ item.value }}"
+  loop: "{{ ota_clusters | dict2items }}"
+  register: app_manifest
+  changed_when: "'configured' in app_manifest.stdout or 'created' in app_manifest.stdout"
+
+- name: Rollout restart FastAPI deployments when Secret or ConfigMap is updated (configured)
+  command: "kubectl --context={{ item.0.item.key }} rollout restart deployment ota-api-server"
+  loop: "{{ app_manifest.results | zip(secret_manifest.results) | list }}"
+  loop_control:
+    label: "{{ item.0.item.key }}"
+  when: "'configured' in item.0.stdout or 'configured' in item.1.stdout"

@@ -1,0 +1,24 @@
+#!/bin/bash
+set -u
+
+LOCAL_HEALTH_URL="http://{{ mgmt_internal_ip }}:8000/health"
+CW_NAMESPACE="OTA/HybridDR"
+CW_METRIC="OnPremHeartbeat"
+AWS_REGION="ap-northeast-1"
+
+while true; do
+  if curl -sf --max-time 5 "${LOCAL_HEALTH_URL}" > /dev/null; then
+    if aws cloudwatch put-metric-data \
+      --region "${AWS_REGION}" \
+      --namespace "${CW_NAMESPACE}" \
+      --metric-name "${CW_METRIC}" \
+      --value 1; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [OK] L7 Health HTTP 200 & Heartbeat(1) pushed to CloudWatch."
+    else
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] L7 Health UP, but failed to push metric to CloudWatch."
+    fi
+  else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] L7 Health HTTP check failed! Skipping heartbeat."
+  fi
+  sleep 30
+done

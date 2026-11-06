@@ -1,0 +1,23 @@
+---
+- name: Install Docker and Docker Compose Plugin
+  shell: |
+    curl -fsSL https://get.docker.com | sh
+    apt-get update && apt-get install -y docker-compose-plugin
+  args:
+    creates: /usr/bin/docker
+
+- name: Add ubuntu user to docker group
+  user:
+    name: ubuntu
+    groups: docker
+    append: true
+
+- name: Install kubectl
+  command: snap install kubectl --classic
+  args:
+    creates: /snap/bin/kubectl
+
+- name: Install AWS CLI v2 via snap
+  command: snap install aws-cli --classic
+  args:
+    creates: /snap/bin/aws

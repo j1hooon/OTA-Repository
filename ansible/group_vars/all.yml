@@ -1,0 +1,9 @@
+---
+ansible_user: ubuntu
+ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+clusters:
+  active:
+    ip: "172.16.100.1"
+  standby:
+    ip: "172.16.200.1"

@@ -1,0 +1,46 @@
+---
+- name: Verify primary_tailscale_ip is available
+  assert:
+    that:
+      - primary_tailscale_ip is defined
+      - primary_tailscale_ip | length > 0
+    fail_msg: "primary_tailscale_ip is not defined!"
+
+- name: Create DR Postgres directories owned by uid/gid 70 (postgres in alpine)
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "70"
+    group: "70"
+    mode: '0700'
+  loop:
+    - /opt/ota-dr-postgres
+    - /opt/ota-dr-postgres/data
+
+- name: Check if standby.signal already exists
+  stat:
+    path: /opt/ota-dr-postgres/data/standby.signal
+  register: standby_sig
+
+- name: Run pg_basebackup from On-Premise Primary DB over Tailscale (--user 70:70)
+  shell: |
+    docker run --rm --user 70:70 \
+      -e PGPASSWORD="{{ pg_password }}" \
+      -v /opt/ota-dr-postgres/data:/var/lib/postgresql/data \
+      postgres:16-alpine \
+      sh -c "rm -rf /var/lib/postgresql/data/* && pg_basebackup -h {{ primary_tailscale_ip }} -p 5432 -U ota_admin -D /var/lib/postgresql/data -Fp -Xs -P -R"
+  when: not standby_sig.stat.exists
+  no_log: true
+
+- name: Render DR Postgres Docker Compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/ota-dr-postgres/docker-compose.yml
+    mode: '0600'
+
+- name: Ensure DR Postgres Standby Container is running via Docker Compose
+  command: docker compose up -d
+  args:
+    chdir: /opt/ota-dr-postgres
+  register: dr_compose_up
+  changed_when: "'Started' in dr_compose_up.stderr or 'Created' in dr_compose_up.stderr or 'Recreated' in dr_compose_up.stderr"

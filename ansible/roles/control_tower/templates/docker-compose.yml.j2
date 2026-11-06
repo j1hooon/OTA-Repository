@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ota-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ota_admin
+      POSTGRES_PASSWORD: {{ pg_password | to_json }}
+      POSTGRES_DB: ota_db
+      TZ: Asia/Seoul
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=5
+      -c max_replication_slots=5
+      -c hot_standby=on
+      -c wal_keep_size=256MB
+    ports:
+      - "{{ mgmt_internal_ip }}:5432:5432"
+      - "{{ mgmt_tailscale_ip }}:5432:5432"
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ota_admin -d ota_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ota-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass {{ redis_password | to_json }}
+      --maxmemory 512mb
+      --maxmemory-policy volatile-lru
+      --appendonly yes
+    ports:
+      - "{{ mgmt_internal_ip }}:6379:6379"
+    volumes:
+      - ./redis/data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", {{ redis_password | to_json }}, "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  haproxy:
+    image: haproxy:2.9-alpine
+    container_name: ota-haproxy
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "8404:8404"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+  jenkins:
+    image: jenkins/jenkins:lts-jdk21
+    container_name: ota-jenkins
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - ./jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/ubuntu/.kube:/root/.kube:ro
+    tmpfs:
+      - /ramdisk:rw,size=2g,mode=1777

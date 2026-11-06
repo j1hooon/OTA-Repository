@@ -1,0 +1,29 @@
+---
+- name: Install Tailscale
+  shell: curl -fsSL https://tailscale.com/install.sh | sh
+  args:
+    creates: /usr/bin/tailscale
+
+- name: Get Tailscale IPv4 address
+  command: tailscale ip -4
+  register: ts_ip_out
+  changed_when: false
+  failed_when: false
+  tags: [always]
+
+- name: Join Tailnet using Auth Key if not already connected
+  command: "tailscale up --authkey={{ tailscale_auth_key }} --ssh"
+  when: ts_ip_out.rc != 0 or ts_ip_out.stdout | trim == ""
+  no_log: true
+  tags: [always]
+
+- name: Re-fetch Tailscale IPv4 address
+  command: tailscale ip -4
+  register: ts_ip_final
+  changed_when: false
+  tags: [always]
+
+- name: Set mgmt_tailscale_ip fact
+  set_fact:
+    mgmt_tailscale_ip: "{{ ts_ip_final.stdout | trim }}"
+  tags: [always]

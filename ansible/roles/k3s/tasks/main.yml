@@ -1,0 +1,11 @@
+---
+- name: Install K3s bound to fixed IP
+  shell: >
+    curl -sfL https://get.k3s.io | sh -s -
+    --write-kubeconfig-mode 644
+    --node-ip {{ ansible_host }}
+    --advertise-address {{ ansible_host }}
+    --tls-san {{ ansible_host }}
+    --flannel-iface eth1
+  args:
+    creates: /usr/local/bin/k3s
