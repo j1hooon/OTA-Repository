@@ -21,3 +21,8 @@
   command: snap install aws-cli --classic
   args:
     creates: /snap/bin/aws
+
+- name: Install Terraform via snap
+  command: snap install terraform --classic
+  args:
+    creates: /snap/bin/terraform

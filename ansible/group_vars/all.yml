@@ -5,6 +5,11 @@ ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
 control_dir: /opt/ota-control-tower
 mgmt_internal_ip: "172.16.10.1"
 ota_nodeport: 30080
+aws_region: "ap-northeast-1"
+
+# terraform apply 후 출력값으로 채우세요 (terraform output s3_bucket_name / cloudfront_domain_name)
+firmware_bucket: ""
+cdn_domain: ""
 
 # 클러스터별 토폴로지 정의 (active / standby / 향후 dr 확장)
 ota_clusters:

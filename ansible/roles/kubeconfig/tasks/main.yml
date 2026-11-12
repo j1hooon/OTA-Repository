@@ -1,0 +1,42 @@
+---
+- name: Fetch k3s.yaml from cluster nodes
+  delegate_to: "{{ item }}"
+  become: true
+  slurp:
+    src: /etc/rancher/k3s/k3s.yaml
+  register: slurped_kubeconfigs
+  loop: "{{ groups['k3s_clusters'] }}"
+
+- name: Ensure ~/.kube directory exists on mgmt
+  file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0700'
+
+- name: Write context-specific kubeconfig files
+  copy:
+    dest: "/home/ubuntu/.kube/{{ item.item }}.yaml"
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+    content: >-
+      {{ item.content | b64decode
+         | replace('127.0.0.1', hostvars[item.item].ansible_host)
+         | replace('default', item.item) }}
+  loop: "{{ slurped_kubeconfigs.results }}"
+  no_log: true
+
+- name: Merge kubeconfigs into ~/.kube/config
+  become: false
+  shell: |
+    KUBECONFIG=$(ls /home/ubuntu/.kube/*.yaml | tr '\n' ':') \
+    kubectl config view --flatten > /home/ubuntu/.kube/config
+    chmod 600 /home/ubuntu/.kube/config
+
+- name: Clean up temporary per-node kubeconfig files
+  file:
+    path: "/home/ubuntu/.kube/{{ item }}.yaml"
+    state: absent
+  loop: "{{ groups['k3s_clusters'] }}"

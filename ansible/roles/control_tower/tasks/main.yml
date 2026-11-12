@@ -47,8 +47,22 @@
     mode: '0600'
   no_log: true
 
-- name: Start Control Tower Containers
-  command: docker compose up -d
+- name: Create Jenkins image build context directory
+  file:
+    path: "{{ control_dir }}/jenkins"
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy custom Jenkins Dockerfile (gcc, bc, psql, redis-cli, aws cli, kubectl)
+  copy:
+    src: jenkins.Dockerfile
+    dest: "{{ control_dir }}/jenkins/Dockerfile"
+    mode: '0644'
+
+- name: Start Control Tower Containers (build custom Jenkins image)
+  command: docker compose up -d --build
   args:
     chdir: "{{ control_dir }}"
   register: compose_up

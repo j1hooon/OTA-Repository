@@ -58,8 +58,14 @@ services:
       - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
 
   jenkins:
-    image: jenkins/jenkins:lts-jdk21
+    build:
+      context: ./jenkins
+    image: ota-jenkins:lts-jdk21
     container_name: ota-jenkins
+    environment:
+      S3_BUCKET: "{{ firmware_bucket }}"
+      CDN_DOMAIN: "{{ cdn_domain }}"
+      AWS_DEFAULT_REGION: "{{ aws_region }}"
     dns:
       - 8.8.8.8
       - 1.1.1.1
