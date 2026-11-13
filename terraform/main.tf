@@ -76,3 +76,9 @@ module "dns_failover" {
   onprem_public_ip = local.effective_onprem_ip
   dr_k3s_public_ip = module.compute.k3s_public_ip
 }
+
+# 5. AWS IoT Core (MQTT Control Plane) 모듈
+module "iot" {
+  source      = "./modules/iot"
+  environment = var.environment
+}

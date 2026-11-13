@@ -43,3 +43,17 @@ output "effective_onprem_public_ip" {
   description = "Verified On-Premise Primary Public IP registered to Route 53"
   value       = local.effective_onprem_ip
 }
+
+output "iot_endpoint" {
+  description = "AWS IoT Core Data-ATS Endpoint for MQTT & boto3"
+  value       = module.iot.iot_endpoint
+}
+
+output "fastapi_iot_access_key_id" {
+  value = module.iot.fastapi_iot_access_key_id
+}
+
+output "fastapi_iot_secret_access_key" {
+  value     = module.iot.fastapi_iot_secret_access_key
+  sensitive = true
+}

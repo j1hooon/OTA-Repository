@@ -1,9 +1,11 @@
-import os, json, time, psycopg2, redis
+import os, json, time, psycopg2, redis, boto3
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="ESP32 OTA API Server")
+app = FastAPI(title="ESP32 OTA API Server (AWS IoT Core Hybrid)")
 CLUSTER_NAME = os.getenv("CLUSTER_NAME", "unknown")
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+IOT_ENDPOINT = os.getenv("IOT_ENDPOINT", "")
 
 def get_db():
     return psycopg2.connect(
@@ -23,6 +25,20 @@ def get_redis():
         socket_timeout=2
     )
 
+def get_iot_client():
+    kwargs = {"region_name": AWS_REGION}
+    if IOT_ENDPOINT:
+        kwargs["endpoint_url"] = f"https://{IOT_ENDPOINT}" if not IOT_ENDPOINT.startswith("http") else IOT_ENDPOINT
+    return boto3.client("iot-data", **kwargs)
+
+class PublishPayload(BaseModel):
+    version: str
+    url: str
+    sha256: str
+    file_size_bytes: int = 524288
+    release_notes: str = "Automated OTA Release"
+    target_device: str = "all"
+
 class ReportPayload(BaseModel):
     device_id: str
     target_version: str
@@ -36,10 +52,75 @@ def health_check():
         r = get_redis()
         r.ping()
         conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT 1;")
+        cur.close()
         conn.close()
         return {"status": "UP", "cluster": CLUSTER_NAME, "db": "CONNECTED", "redis": "CONNECTED"}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+@app.post("/ota/publish")
+def publish_firmware(payload: PublishPayload):
+    # 1. PostgreSQL에 신규 펌웨어 메타데이터 Upsert
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO firmware_releases (version, s3_url, sha256_hash, file_size_bytes, release_notes)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (version) DO UPDATE SET
+                s3_url = EXCLUDED.s3_url,
+                sha256_hash = EXCLUDED.sha256_hash,
+                file_size_bytes = EXCLUDED.file_size_bytes,
+                release_notes = EXCLUDED.release_notes,
+                created_at = CURRENT_TIMESTAMP;
+        """, (payload.version, payload.url, payload.sha256, payload.file_size_bytes, payload.release_notes))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as db_err:
+        raise HTTPException(status_code=500, detail=f"DB Update Failed: {str(db_err)}")
+
+    # 2. Redis 캐시 즉시 갱신 (Write-Through)
+    fw_data = {
+        "version": payload.version,
+        "url": payload.url,
+        "sha256": payload.sha256,
+        "size": payload.file_size_bytes
+    }
+    r = get_redis()
+    r.setex("latest_firmware", 300, json.dumps(fw_data))
+
+    # 3. AWS IoT Core (MQTT Control Plane)로 실시간 Push 알림 발행
+    topic = f"ota/notify/{payload.target_device}"
+    mqtt_message = {
+        "command": "OTA_UPDATE",
+        "version": payload.version,
+        "url": payload.url,
+        "sha256": payload.sha256,
+        "size": payload.file_size_bytes,
+        "published_by": CLUSTER_NAME,
+        "timestamp": int(time.time())
+    }
+    try:
+        iot = get_iot_client()
+        iot.publish(
+            topic=topic,
+            qos=1,
+            payload=json.dumps(mqtt_message)
+        )
+        mqtt_status = "PUBLISHED_TO_AWS_IOT_CORE"
+    except Exception as iot_err:
+        raise HTTPException(status_code=502, detail=f"DB/Redis updated, but AWS IoT Publish failed: {str(iot_err)}")
+
+    return {
+        "result": "SUCCESS",
+        "handled_by_cluster": CLUSTER_NAME,
+        "mqtt_status": mqtt_status,
+        "topic": topic,
+        "firmware": fw_data
+    }
 
 @app.get("/ota/check")
 def check_update(device_id: str = "esp32-dev-01", current_version: str = "0.9.0"):
@@ -89,7 +170,6 @@ def report_status(payload: ReportPayload):
         conn.close()
         return {"result": "RECORDED_IN_DB", "handled_by_cluster": CLUSTER_NAME}
     except Exception as db_err:
-        # DR Standby Read-Only 상태이거나 Master DB 장애 시 로컬 Redis AOF 큐에 무손실 적재
         r = get_redis()
         event = payload.dict()
         event["handled_by_cluster"] = CLUSTER_NAME
