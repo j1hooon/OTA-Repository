@@ -222,7 +222,7 @@ pipeline {
                     echo ""
                     echo "--- /ota/check 호출 검증 (Stage 5 Write-Through 캐싱에 의해 REDIS_CACHE 즉시 응답) ---"
                     RESP=$(curl -fsS "http://${MGMT_IP}:8000/ota/check?device_id=esp32-ci-verifier&current_version=1.0.0")
-                    echo "${RESP}" | jq .
+                    echo "${RESP}"
                     echo ""
                     echo "--- /ota/check 응답이 방금 배포한 URL/해시와 일치하는지 검증 ---"
                     echo "${RESP}" | grep -qF "${S3_URL}" || { echo "[FAIL] /ota/check 의 URL 이 방금 업로드한 URL 과 다릅니다"; exit 1; }
