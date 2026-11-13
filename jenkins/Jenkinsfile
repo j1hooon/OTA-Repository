@@ -183,26 +183,41 @@ pipeline {
             steps {
                 sh '''#!/bin/bash
                     set -e
-                    printf "\\033[1;34m[PUBLISH] FastAPI(/ota/publish) 호출 -> DB + Redis + AWS IoT Core MQTT 브로드캐스트\\033[0m\\n"
+                    printf "[1;34m[PUBLISH] FastAPI(/ota/publish) 호출 -> DB + Redis + AWS IoT Core MQTT 브로드캐스트[0m
+"
 
-                    PUB_RESP=$(curl -fsS -X POST "http://${MGMT_IP}:8000/ota/publish" \
+                    PAYLOAD=$(python3 -c 'import os, json; print(json.dumps({
+                        "version": os.environ["FIRMWARE_VERSION"],
+                        "url": os.environ["S3_URL"],
+                        "sha256": os.environ["FW_SHA256"],
+                        "file_size_bytes": int(os.environ["FW_SIZE"]),
+                        "release_notes": os.environ["RELEASE_NOTES"],
+                        "target_device": os.environ["TARGET_DEVICE"]
+                    }))')
+
+                    echo "[DEBUG] Request Payload: ${PAYLOAD}"
+
+                    PUB_RESP=$(curl -sS -w "
+%{http_code}" -X POST "http://${MGMT_IP}:8000/ota/publish" \
                         -H "Content-Type: application/json" \
-                        -d "{
-                            \\"version\\": \\"${FIRMWARE_VERSION}\\",
-                            \\"url\\": \\"${S3_URL}\\",
-                            \\"sha256\\": \\"${FW_SHA256}\\",
-                            \\"file_size_bytes\\": ${FW_SIZE},
-                            \\"release_notes\\": \\"${RELEASE_NOTES}\\",
-                            \\"target_device\\": \\"${TARGET_DEVICE}\\"
-                        }")
+                        -d "${PAYLOAD}")
 
-                    echo "${PUB_RESP}"
+                    HTTP_BODY=$(echo "${PUB_RESP}" | head -n -1)
+                    HTTP_STATUS=$(echo "${PUB_RESP}" | tail -n 1)
 
-                    echo "${PUB_RESP}" | grep -qF "PUBLISHED_TO_AWS_IOT_CORE" || {
+                    echo "[DEBUG] Response (HTTP ${HTTP_STATUS}): ${HTTP_BODY}"
+
+                    if [ "${HTTP_STATUS}" -ne 200 ]; then
+                        echo "[FAIL] /ota/publish 요청 실패 (HTTP ${HTTP_STATUS})"
+                        exit 1
+                    fi
+
+                    echo "${HTTP_BODY}" | grep -qF "PUBLISHED_TO_AWS_IOT_CORE" || {
                         echo "[FAIL] AWS IoT Core MQTT Publish 응답 검증 실패"
                         exit 1
                     }
-                    printf "\\033[1;32m[OK] DB 등록, Redis 캐시 갱신 및 AWS IoT Core (ota/notify/${TARGET_DEVICE}) 발행 완료!\\033[0m\\n"
+                    printf "[1;32m[OK] DB 등록, Redis 캐시 갱신 및 AWS IoT Core (ota/notify/${TARGET_DEVICE}) 발행 완료![0m
+"
                 '''
             }
         }
