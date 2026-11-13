@@ -183,22 +183,20 @@ pipeline {
             steps {
                 sh '''#!/bin/bash
                     set -e
-                    printf "\\033[1;34m[PUBLISH] FastAPI(/ota/publish) 호출 -> DB Upsert + Redis Write-Through + AWS IoT Core MQTT 브로드캐스트\\033[0m\\n"
-
-                    PAYLOAD=$(jq -n \
-                        --arg ver "${FIRMWARE_VERSION}" \
-                        --arg url "${S3_URL}" \
-                        --arg sha "${FW_SHA256}" \
-                        --argjson size "${FW_SIZE}" \
-                        --arg notes "${RELEASE_NOTES}" \
-                        --arg target "${TARGET_DEVICE}" \
-                        '{version: $ver, url: $url, sha256: $sha, file_size_bytes: $size, release_notes: $notes, target_device: $target}')
+                    printf "\\033[1;34m[PUBLISH] FastAPI(/ota/publish) 호출 -> DB + Redis + AWS IoT Core MQTT 브로드캐스트\\033[0m\\n"
 
                     PUB_RESP=$(curl -fsS -X POST "http://${MGMT_IP}:8000/ota/publish" \
                         -H "Content-Type: application/json" \
-                        -d "${PAYLOAD}")
+                        -d "{
+                            \\"version\\": \\"${FIRMWARE_VERSION}\\",
+                            \\"url\\": \\"${S3_URL}\\",
+                            \\"sha256\\": \\"${FW_SHA256}\\",
+                            \\"file_size_bytes\\": ${FW_SIZE},
+                            \\"release_notes\\": \\"${RELEASE_NOTES}\\",
+                            \\"target_device\\": \\"${TARGET_DEVICE}\\"
+                        }")
 
-                    echo "${PUB_RESP}" | jq .
+                    echo "${PUB_RESP}"
 
                     echo "${PUB_RESP}" | grep -qF "PUBLISHED_TO_AWS_IOT_CORE" || {
                         echo "[FAIL] AWS IoT Core MQTT Publish 응답 검증 실패"
