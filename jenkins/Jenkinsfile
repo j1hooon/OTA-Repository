@@ -1,24 +1,27 @@
 pipeline {
     agent any
-
+ 
     options {
         timestamps()
         ansiColor('xterm')
     }
-
+ 
     parameters {
         string(name: 'FIRMWARE_VERSION', defaultValue: '1.1.0', description: '배포할 새로운 ESP32 펌웨어 버전')
         string(name: 'RELEASE_NOTES', defaultValue: 'Optimize WiFi reconnection & memory leak fix', description: '릴리즈 노트')
     }
-
+ 
     environment {
         MGMT_IP    = '172.16.10.1'
         RAMDISK    = '/ramdisk/ota-build'
         DISK_DIR   = "${WORKSPACE}/disk-build"
         PG_PASS    = credentials('pg-password')
         REDIS_PASS = credentials('redis-password')
+        // 새 잡의 첫 빌드에서는 파라미터가 셸 환경변수로 전달되지 않으므로 명시적으로 지정
+        FIRMWARE_VERSION = "${params.FIRMWARE_VERSION}"
+        RELEASE_NOTES    = "${params.RELEASE_NOTES}"
     }
-
+ 
     stages {
         stage('1. Prepare RAM Disk') {
             steps {
@@ -30,13 +33,13 @@ pipeline {
                 '''
             }
         }
-
+ 
         stage('2. Benchmark: Disk vs RAM Disk Build') {
             steps {
                 sh '''
                     set -e
                     printf "\\033[1;33m[BENCHMARK] 150개 C/C++ 오브젝트 모듈 생성 및 I/O 병합 컴파일 비교 측정\\033[0m\\n"
-
+ 
                     START_DISK=$(date +%s.%N)
                     for i in $(seq 1 150); do
                         echo "int func_${i}(int x) { return x * ${i}; }" > "${DISK_DIR}/mod_${i}.c"
@@ -46,7 +49,7 @@ pipeline {
                     sync
                     END_DISK=$(date +%s.%N)
                     DISK_TIME=$(echo "$END_DISK - $START_DISK" | bc)
-
+ 
                     START_RAM=$(date +%s.%N)
                     for i in $(seq 1 150); do
                         echo "int func_${i}(int x) { return x * ${i}; }" > "${RAMDISK}/mod_${i}.c"
@@ -56,16 +59,16 @@ pipeline {
                     cat "${RAMDISK}"/*.o >> "${RAMDISK}/esp32-v${FIRMWARE_VERSION}.bin"
                     END_RAM=$(date +%s.%N)
                     RAM_TIME=$(echo "$END_RAM - $START_RAM" | bc)
-
+ 
                     printf "\\033[1;32m========================================================\\033[0m\\n"
                     printf "\\033[1;32m �� [포트폴리오 정량 지표] 스토리지 I/O 및 빌드 소요 시간 비교\\033[0m\\n"
-                    printf "  - 일반 디스크 (Disk I/O + fsync) : 0%s 초\\n" "${DISK_TIME}"
-                    printf "  - 2GB RAM 디스크 (tmpfs In-Memory): 0%s 초\\n" "${RAM_TIME}"
+                    printf "  - 일반 디스크 (Disk I/O + fsync) : %.2f 초\\n" "${DISK_TIME}"
+                    printf "  - 2GB RAM 디스크 (tmpfs In-Memory): %.2f 초\\n" "${RAM_TIME}"
                     printf "\\033[1;32m========================================================\\033[0m\\n"
                 '''
             }
         }
-
+ 
         stage('3. SHA-256 Hash & Artifact Metadata') {
             steps {
                 script {
@@ -86,7 +89,7 @@ pipeline {
                 '''
             }
         }
-
+ 
         stage('4. Upload Firmware to S3 (CloudFront Origin)') {
             steps {
                 withCredentials([usernamePassword(
@@ -105,7 +108,7 @@ pipeline {
                 }
             }
         }
-
+ 
         stage('5. Update Postgres DB & Evict Redis Cache') {
             steps {
                 sh '''
@@ -118,13 +121,13 @@ pipeline {
                         file_size_bytes = EXCLUDED.file_size_bytes,
                         release_notes = EXCLUDED.release_notes,
                         created_at = CURRENT_TIMESTAMP;"
-
+ 
                     printf "\\033[1;33m[REDIS] 기존 캐시(latest_firmware) 즉시 무효화(Eviction) 실행...\\033[0m\\n"
                     redis-cli -h "${MGMT_IP}" -a "${REDIS_PASS}" DEL latest_firmware
                 '''
             }
         }
-
+ 
         stage('6. Verify Multi-Cluster OTA Endpoint') {
             steps {
                 sh '''
@@ -147,7 +150,7 @@ pipeline {
             }
         }
     }
-
+ 
     post {
         always {
             sh '''
