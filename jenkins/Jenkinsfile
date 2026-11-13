@@ -120,6 +120,7 @@ pipeline {
                     INSERT INTO firmware_releases (version, s3_url, sha256_hash, file_size_bytes, release_notes)
                     VALUES ('${FIRMWARE_VERSION}', '${S3_URL}', '${FW_SHA256}', ${FW_SIZE}, '${RELEASE_NOTES}')
                     ON CONFLICT (version) DO UPDATE SET
+                        s3_url = EXCLUDED.s3_url,
                         sha256_hash = EXCLUDED.sha256_hash,
                         file_size_bytes = EXCLUDED.file_size_bytes,
                         release_notes = EXCLUDED.release_notes,
@@ -147,8 +148,13 @@ pipeline {
                     curl -s "http://${MGMT_IP}:8000/ota/check?device_id=esp32-ci-verifier&current_version=1.0.0"
                     echo ""
                     echo "--- 2차 호출 (자동 재캐싱 완료 -> REDIS_CACHE에서 1ms 응답) ---"
-                    curl -s "http://${MGMT_IP}:8000/ota/check?device_id=esp32-ci-verifier&current_version=1.0.0"
+                    RESP=$(curl -s "http://${MGMT_IP}:8000/ota/check?device_id=esp32-ci-verifier&current_version=1.0.0")
+                    echo "${RESP}"
                     echo ""
+                    echo "--- /ota/check 응답이 방금 배포한 URL/해시와 일치하는지 검증 ---"
+                    echo "${RESP}" | grep -qF "${S3_URL}" || { echo "[FAIL] /ota/check 의 URL 이 방금 업로드한 URL 과 다릅니다"; exit 1; }
+                    echo "${RESP}" | grep -qF "${FW_SHA256}" || { echo "[FAIL] /ota/check 의 SHA-256 이 방금 빌드와 다릅니다"; exit 1; }
+                    echo "[OK] /ota/check 가 신규 펌웨어(URL, SHA-256)를 정확히 안내합니다"
                 '''
             }
         }
