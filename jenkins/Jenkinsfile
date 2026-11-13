@@ -181,47 +181,43 @@ pipeline {
 
         stage('5. Publish via FastAPI (DB + Redis + AWS IoT Core MQTT)') {
             steps {
+                // jq / python3 없이 Groovy 로 JSON 본문 생성 (Jenkins 이미지에 둘 다 없음)
+                script {
+                    def esc = { String s -> s.replace('\\', '\\\\').replace('"', '\\"') }
+                    def body = '{' +
+                        '"version":"' + esc(params.FIRMWARE_VERSION) + '",' +
+                        '"url":"' + esc(env.S3_URL) + '",' +
+                        '"sha256":"' + esc(env.FW_SHA256) + '",' +
+                        '"file_size_bytes":' + env.FW_SIZE + ',' +
+                        '"release_notes":"' + esc(params.RELEASE_NOTES) + '",' +
+                        '"target_device":"' + esc(env.TARGET_DEVICE) + '"' +
+                        '}'
+                    writeFile file: 'publish-payload.json', text: body
+                }
                 sh '''#!/bin/bash
                     set -e
-                    printf "[1;34m[PUBLISH] FastAPI(/ota/publish) 호출 -> DB + Redis + AWS IoT Core MQTT 브로드캐스트[0m
-"
+                    echo "[PUBLISH] FastAPI(/ota/publish) 호출 -> DB + Redis + AWS IoT Core MQTT 브로드캐스트"
+                    echo "[DEBUG] Request Payload: $(cat publish-payload.json)"
 
-                    PAYLOAD=$(python3 -c 'import os, json; print(json.dumps({
-                        "version": os.environ["FIRMWARE_VERSION"],
-                        "url": os.environ["S3_URL"],
-                        "sha256": os.environ["FW_SHA256"],
-                        "file_size_bytes": int(os.environ["FW_SIZE"]),
-                        "release_notes": os.environ["RELEASE_NOTES"],
-                        "target_device": os.environ["TARGET_DEVICE"]
-                    }))')
-
-                    echo "[DEBUG] Request Payload: ${PAYLOAD}"
-
-                    PUB_RESP=$(curl -sS -w "
-%{http_code}" -X POST "http://${MGMT_IP}:8000/ota/publish" \
+                    HTTP_STATUS=$(curl -sS -o publish-response.json -w '%{http_code}' -X POST "http://${MGMT_IP}:8000/ota/publish" \
                         -H "Content-Type: application/json" \
-                        -d "${PAYLOAD}")
+                        --data-binary @publish-payload.json)
 
-                    HTTP_BODY=$(echo "${PUB_RESP}" | head -n -1)
-                    HTTP_STATUS=$(echo "${PUB_RESP}" | tail -n 1)
+                    echo "[DEBUG] Response (HTTP ${HTTP_STATUS}): $(cat publish-response.json)"
 
-                    echo "[DEBUG] Response (HTTP ${HTTP_STATUS}): ${HTTP_BODY}"
-
-                    if [ "${HTTP_STATUS}" -ne 200 ]; then
+                    if [ "${HTTP_STATUS}" != "200" ]; then
                         echo "[FAIL] /ota/publish 요청 실패 (HTTP ${HTTP_STATUS})"
                         exit 1
                     fi
 
-                    echo "${HTTP_BODY}" | grep -qF "PUBLISHED_TO_AWS_IOT_CORE" || {
+                    grep -qF "PUBLISHED_TO_AWS_IOT_CORE" publish-response.json || {
                         echo "[FAIL] AWS IoT Core MQTT Publish 응답 검증 실패"
                         exit 1
                     }
-                    printf "[1;32m[OK] DB 등록, Redis 캐시 갱신 및 AWS IoT Core (ota/notify/${TARGET_DEVICE}) 발행 완료![0m
-"
+                    echo "[OK] DB 등록, Redis 캐시 갱신 및 AWS IoT Core (ota/notify/${TARGET_DEVICE}) 발행 완료"
                 '''
             }
         }
-
         stage('6. Verify Multi-Cluster OTA Endpoint') {
             steps {
                 sh '''#!/bin/bash
