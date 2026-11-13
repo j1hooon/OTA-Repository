@@ -17,6 +17,9 @@ pipeline {
         DISK_DIR   = "${WORKSPACE}/disk-build"
         PG_PASS    = credentials('pg-password')
         REDIS_PASS = credentials('redis-password')
+        // 새 잡의 첫 빌드에서는 파라미터가 셸 환경변수로 전달되지 않으므로 명시적으로 지정
+        FIRMWARE_VERSION = "${params.FIRMWARE_VERSION}"
+        RELEASE_NOTES    = "${params.RELEASE_NOTES}"
     }
 
     stages {
@@ -58,9 +61,9 @@ pipeline {
                     RAM_TIME=$(echo "$END_RAM - $START_RAM" | bc)
 
                     printf "\\033[1;32m========================================================\\033[0m\\n"
-                    printf "\\033[1;32m �� [포트폴리오 정량 지표] 스토리지 I/O 및 빌드 소요 시간 비교\\033[0m\\n"
-                    printf "  - 일반 디스크 (Disk I/O + fsync) : 0%s 초\\n" "${DISK_TIME}"
-                    printf "  - 2GB RAM 디스크 (tmpfs In-Memory): 0%s 초\\n" "${RAM_TIME}"
+                    printf "\\033[1;32m [포트폴리오 정량 지표] 스토리지 I/O 및 빌드 소요 시간 비교\\033[0m\\n"
+                    printf "  - 일반 디스크 (Disk I/O + fsync) : %.2f 초\\n" "${DISK_TIME}"
+                    printf "  - 2GB RAM 디스크 (tmpfs In-Memory): %.2f 초\\n" "${RAM_TIME}"
                     printf "\\033[1;32m========================================================\\033[0m\\n"
                 '''
             }
@@ -72,19 +75,44 @@ pipeline {
                     env.FW_FILE = "${RAMDISK}/esp32-v${params.FIRMWARE_VERSION}.bin"
                     env.FW_SHA256 = sh(script: "sha256sum ${env.FW_FILE} | awk '{print \$1}'", returnStdout: true).trim()
                     env.FW_SIZE = sh(script: "stat -c%s ${env.FW_FILE}", returnStdout: true).trim()
-                    env.S3_URL = "http://${MGMT_IP}:8000/firmware/esp32-v${params.FIRMWARE_VERSION}.bin"
+                    if (!env.S3_BUCKET?.trim() || !env.CDN_DOMAIN?.trim()) {
+                        error('S3_BUCKET / CDN_DOMAIN 이 비어 있습니다. group_vars/all.yml 의 firmware_bucket, cdn_domain 을 채우고 control_tower 를 다시 배포하세요.')
+                    }
+                    // 내용 해시(앞 12자)를 파일명에 포함: 같은 버전을 다시 빌드해도 CDN 캐시와 충돌하지 않는 불변(immutable) 경로
+                    env.FW_KEY = sh(script: "echo firmware/esp32-v${params.FIRMWARE_VERSION}-\$(echo ${env.FW_SHA256} | cut -c1-12).bin", returnStdout: true).trim()
+                    env.S3_URL = "https://${env.CDN_DOMAIN}/${env.FW_KEY}"
                 }
                 sh '''
                     printf "\\033[1;36m[ARTIFACT] 펌웨어 바이너리 무결성 검증 데이터 생성 완료\\033[0m\\n"
                     echo " - Version : ${FIRMWARE_VERSION}"
                     echo " - SHA-256 : ${FW_SHA256}"
                     echo " - Size    : ${FW_SIZE} bytes"
+                    echo " - S3 Key  : ${FW_KEY}"
                     echo " - URL     : ${S3_URL}"
                 '''
             }
         }
 
-        stage('4. Update Postgres DB & Evict Redis Cache') {
+        stage('4. Upload Firmware to S3 (CloudFront Origin)') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-firmware-uploader',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    sh '''
+                        printf "\\033[1;34m[S3] 펌웨어 업로드: s3://${S3_BUCKET}/${FW_KEY}\\033[0m\\n"
+                        aws s3 cp "${FW_FILE}" "s3://${S3_BUCKET}/${FW_KEY}" \
+                            --content-type application/octet-stream --only-show-errors
+                        aws s3api head-object --bucket "${S3_BUCKET}" \
+                            --key "${FW_KEY}" \
+                            --query ContentLength --output text
+                    '''
+                }
+            }
+        }
+
+        stage('5. Update Postgres DB & Evict Redis Cache') {
             steps {
                 sh '''
                     printf "\\033[1;34m[DB] PostgreSQL에 신규 펌웨어(${FIRMWARE_VERSION}) 메타데이터 등록 중...\\033[0m\\n"
@@ -92,6 +120,7 @@ pipeline {
                     INSERT INTO firmware_releases (version, s3_url, sha256_hash, file_size_bytes, release_notes)
                     VALUES ('${FIRMWARE_VERSION}', '${S3_URL}', '${FW_SHA256}', ${FW_SIZE}, '${RELEASE_NOTES}')
                     ON CONFLICT (version) DO UPDATE SET
+                        s3_url = EXCLUDED.s3_url,
                         sha256_hash = EXCLUDED.sha256_hash,
                         file_size_bytes = EXCLUDED.file_size_bytes,
                         release_notes = EXCLUDED.release_notes,
@@ -103,19 +132,29 @@ pipeline {
             }
         }
 
-        stage('5. Verify Multi-Cluster OTA Endpoint') {
+        stage('6. Verify Multi-Cluster OTA Endpoint') {
             steps {
                 sh '''
                     printf "\\033[1;32m[VERIFY] HAProxy(:8000)를 통해 신규 펌웨어 배포 상태 및 K3s 클러스터 상태 검증\\033[0m\\n"
                     kubectl get pods --context=active
                     kubectl get pods --context=standby
                     echo ""
+                    echo "--- CloudFront 다운로드 및 SHA-256 무결성 검증 (신규 배포 직후엔 전파 지연으로 재시도) ---"
+                    curl -fsS --retry 10 --retry-delay 5 --retry-all-errors -o /tmp/fw-verify.bin "${S3_URL}"
+                    echo "${FW_SHA256}  /tmp/fw-verify.bin" | sha256sum -c -
+                    rm -f /tmp/fw-verify.bin
+                    echo ""
                     echo "--- 1차 호출 (Cache Eviction 직후 -> POSTGRES_DB에서 v${FIRMWARE_VERSION} 로드) ---"
                     curl -s "http://${MGMT_IP}:8000/ota/check?device_id=esp32-ci-verifier&current_version=1.0.0"
                     echo ""
                     echo "--- 2차 호출 (자동 재캐싱 완료 -> REDIS_CACHE에서 1ms 응답) ---"
-                    curl -s "http://${MGMT_IP}:8000/ota/check?device_id=esp32-ci-verifier&current_version=1.0.0"
+                    RESP=$(curl -s "http://${MGMT_IP}:8000/ota/check?device_id=esp32-ci-verifier&current_version=1.0.0")
+                    echo "${RESP}"
                     echo ""
+                    echo "--- /ota/check 응답이 방금 배포한 URL/해시와 일치하는지 검증 ---"
+                    echo "${RESP}" | grep -qF "${S3_URL}" || { echo "[FAIL] /ota/check 의 URL 이 방금 업로드한 URL 과 다릅니다"; exit 1; }
+                    echo "${RESP}" | grep -qF "${FW_SHA256}" || { echo "[FAIL] /ota/check 의 SHA-256 이 방금 빌드와 다릅니다"; exit 1; }
+                    echo "[OK] /ota/check 가 신규 펌웨어(URL, SHA-256)를 정확히 안내합니다"
                 '''
             }
         }

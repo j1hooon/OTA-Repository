@@ -6,6 +6,8 @@ vault_pass*
 # Kubernetes & Keys
 kubeconfig*
 *.kubeconfig
+# kubeconfig 파일은 제외하되 Ansible 롤 디렉터리는 추적
+!ansible/roles/kubeconfig/
 active.yaml
 secrets.yml
 standby.yaml
