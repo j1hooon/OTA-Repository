@@ -194,28 +194,33 @@ pipeline {
                         '}'
                     writeFile file: 'publish-payload.json', text: body
                 }
-                sh '''#!/bin/bash
-                    set -e
-                    echo "[PUBLISH] FastAPI(/ota/publish) 호출 -> DB + Redis + AWS IoT Core MQTT 브로드캐스트"
-                    echo "[DEBUG] Request Payload: $(cat publish-payload.json)"
+                withCredentials([string(credentialsId: 'ota-publish-api-key', variable: 'PUBLISH_API_KEY')]) {
+                    sh '''#!/bin/bash
+                        set -e
+                        echo "[PUBLISH] FastAPI(/ota/publish) 호출 -> DB + Redis + AWS IoT Core MQTT 브로드캐스트"
+                        echo "[DEBUG] Request Payload: $(cat publish-payload.json)"
 
-                    HTTP_STATUS=$(curl -sS -o publish-response.json -w '%{http_code}' -X POST "http://${MGMT_IP}:8000/ota/publish" \
-                        -H "Content-Type: application/json" \
-                        --data-binary @publish-payload.json)
+                        HTTP_STATUS=$(curl -sS -o publish-response.json -w '%{http_code}' -X POST "http://${MGMT_IP}:8000/ota/publish" \
+                            -H "Content-Type: application/json" \
+                            -H "X-API-Key: ${PUBLISH_API_KEY}" \
+                            --data-binary @publish-payload.json)
 
-                    echo "[DEBUG] Response (HTTP ${HTTP_STATUS}): $(cat publish-response.json)"
+                        echo "[DEBUG] Response (HTTP ${HTTP_STATUS}): $(cat publish-response.json)"
 
-                    if [ "${HTTP_STATUS}" != "200" ]; then
-                        echo "[FAIL] /ota/publish 요청 실패 (HTTP ${HTTP_STATUS})"
-                        exit 1
-                    fi
+                        if [ "${HTTP_STATUS}" != "200" ]; then
+                            echo "[FAIL] /ota/publish 요청 실패 (HTTP ${HTTP_STATUS})"
+                            [ "${HTTP_STATUS}" = "401" ] && echo "       -> Jenkins 자격증명 ota-publish-api-key 가 Vault 의 ota_publish_api_key 와 같은지 확인"
+                            [ "${HTTP_STATUS}" = "503" ] && echo "       -> 서버에 PUBLISH_API_KEY 가 배포되지 않음 (ansible --tags ota_api 재실행)"
+                            exit 1
+                        fi
 
-                    grep -qF "PUBLISHED_TO_AWS_IOT_CORE" publish-response.json || {
-                        echo "[FAIL] AWS IoT Core MQTT Publish 응답 검증 실패"
-                        exit 1
-                    }
-                    echo "[OK] DB 등록, Redis 캐시 갱신 및 AWS IoT Core (ota/notify/${TARGET_DEVICE}) 발행 완료"
-                '''
+                        grep -qF "PUBLISHED_TO_AWS_IOT_CORE" publish-response.json || {
+                            echo "[FAIL] AWS IoT Core MQTT Publish 응답 검증 실패"
+                            exit 1
+                        }
+                        echo "[OK] DB 등록, Redis 캐시 갱신 및 AWS IoT Core (ota/notify/${TARGET_DEVICE}) 발행 완료"
+                    '''
+                }
             }
         }
         stage('6. Verify Multi-Cluster OTA Endpoint') {

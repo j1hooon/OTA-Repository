@@ -1,11 +1,13 @@
-import os, json, time, psycopg2, redis, boto3
-from fastapi import FastAPI, HTTPException
+import os, json, time, hmac, psycopg2, redis, boto3
+from botocore.config import Config
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 app = FastAPI(title="ESP32 OTA API Server (AWS IoT Core Hybrid)")
 CLUSTER_NAME = os.getenv("CLUSTER_NAME", "unknown")
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")
 IOT_ENDPOINT = os.getenv("IOT_ENDPOINT", "")
+PUBLISH_API_KEY = os.getenv("PUBLISH_API_KEY", "")
 
 def get_db():
     return psycopg2.connect(
@@ -26,10 +28,20 @@ def get_redis():
     )
 
 def get_iot_client():
-    kwargs = {"region_name": AWS_REGION}
+    # 외부 통신 장애(DNS 등) 시 요청이 수십 초 매달리지 않고 빠르게 실패(502)하도록 타임아웃 지정
+    kwargs = {"region_name": AWS_REGION,
+              "config": Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 1})}
     if IOT_ENDPOINT:
         kwargs["endpoint_url"] = f"https://{IOT_ENDPOINT}" if not IOT_ENDPOINT.startswith("http") else IOT_ENDPOINT
     return boto3.client("iot-data", **kwargs)
+
+
+def require_publish_key(x_api_key: str = Header(default="")):
+    """/ota/publish 전용 API 키 검증 (X-API-Key 헤더). 키가 설정되지 않았으면 fail-closed."""
+    if not PUBLISH_API_KEY:
+        raise HTTPException(status_code=503, detail="Publish is disabled: PUBLISH_API_KEY is not configured")
+    if not hmac.compare_digest(x_api_key.encode("utf-8"), PUBLISH_API_KEY.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 class PublishPayload(BaseModel):
     version: str
@@ -60,7 +72,7 @@ def health_check():
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-@app.post("/ota/publish")
+@app.post("/ota/publish", dependencies=[Depends(require_publish_key)])
 def publish_firmware(payload: PublishPayload):
     # 1. PostgreSQL에 신규 펌웨어 메타데이터 Upsert
     try:
