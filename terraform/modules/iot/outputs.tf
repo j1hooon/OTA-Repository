@@ -17,6 +17,7 @@ output "fastapi_iot_secret_access_key" {
 }
 
 output "device_certificate_pem" {
+  sensitive   = true
   description = "ESP32 디바이스 X.509 인증서(PEM)"
   value       = aws_iot_certificate.esp32_fleet.certificate_pem
 }
