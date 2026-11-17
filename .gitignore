@@ -34,3 +34,7 @@ __pycache__/
 *.py[cod]
 .env
 .venv/
+
+# Device simulator (인증서/개인키/상태)
+device-sim/certs/
+device-sim/device_state.json

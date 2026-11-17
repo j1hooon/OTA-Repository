@@ -57,3 +57,18 @@ output "fastapi_iot_secret_access_key" {
   value     = module.iot.fastapi_iot_secret_access_key
   sensitive = true
 }
+
+output "iot_thing_name" {
+  description = "디바이스(Thing) 이름 = MQTT Client ID"
+  value       = module.iot.iot_thing_name
+}
+
+output "device_certificate_pem" {
+  sensitive   = true
+  value = module.iot.device_certificate_pem
+}
+
+output "device_private_key" {
+  value     = module.iot.device_private_key
+  sensitive = true
+}
