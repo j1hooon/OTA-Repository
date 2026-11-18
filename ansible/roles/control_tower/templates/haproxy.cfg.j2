@@ -23,5 +23,5 @@ frontend ota_api_front
 backend ota_clusters_back
     option httpchk GET /health
     http-check expect status 200
-    server active_cluster {{ ota_clusters.active.node_ip }}:{{ ota_nodeport }} check inter 1000ms fall 2 rise 2
-    server standby_cluster {{ ota_clusters.standby.node_ip }}:{{ ota_nodeport }} check inter 1000ms fall 2 rise 2 backup
+    server active_cluster {{ ota_clusters.active.node_ip }}:{{ ota_nodeport }} check inter {{ haproxy_check_inter }}ms fall {{ haproxy_check_fall }} rise {{ haproxy_check_rise }}
+    server standby_cluster {{ ota_clusters.standby.node_ip }}:{{ ota_nodeport }} check inter {{ haproxy_check_inter }}ms fall {{ haproxy_check_fall }} rise {{ haproxy_check_rise }} backup
