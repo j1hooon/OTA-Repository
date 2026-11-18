@@ -38,3 +38,6 @@ __pycache__/
 # Device simulator (인증서/개인키/상태)
 device-sim/certs/
 device-sim/device_state.json
+
+# 절체 측정 원본 로그 (summary.csv 는 보존)
+failover-results/run*.log
