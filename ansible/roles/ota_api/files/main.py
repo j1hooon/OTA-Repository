@@ -95,6 +95,7 @@ def ensure_status_schema():
     conn = get_db()
     try:
         cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(827364)")  # 복제본 동시 시작 시 DDL 직렬화
         cur.execute(STATUS_DDL)
         conn.commit()
         cur.close()
