@@ -9,7 +9,7 @@ ota_nodeport: 30080
 # HAProxy 헬스체크 튜닝 (절체 시간 RTO <-> 오탐 위험의 트레이드오프)
 #   무응답 장애 시 RTO 는 대략 inter 의 3~4배(체크 타임아웃이 inter 와 같아 매 체크가 inter 만큼 대기)
 #   -e haproxy_check_inter=500 처럼 덮어써서 실험하고, 결정한 값을 여기에 반영한다.
-haproxy_check_inter: 1000   # ms
+haproxy_check_inter: 500   # ms
 haproxy_check_fall: 2       # 연속 실패 N회면 DOWN
 haproxy_check_rise: 2       # 연속 성공 N회면 UP
 aws_region: "ap-northeast-1"
