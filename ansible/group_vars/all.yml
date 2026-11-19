@@ -8,7 +8,7 @@ ota_nodeport: 30080
 
 # FastAPI 베이스 이미지 (GitHub Actions 가 ghcr.io 에 빌드/푸시). 재현성을 위해 운영에서는 sha 태그로 고정한다.
 #   예) ghcr.io/j1hooon/ota-api:sha-abc1234   (":latest" 이면 imagePullPolicy 가 Always)
-ota_api_image: "ghcr.io/j1hooon/ota-api:latest"
+ota_api_image: "ghcr.io/j1hooon/ota-api:sha-a315f95"
 
 # HAProxy 헬스체크 튜닝 (절체 시간 RTO <-> 오탐 위험의 트레이드오프)
 #   무응답 장애 시 RTO 는 대략 inter 의 3~4배(체크 타임아웃이 inter 와 같아 매 체크가 inter 만큼 대기)

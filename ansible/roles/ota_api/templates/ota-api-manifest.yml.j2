@@ -18,7 +18,7 @@ spec:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0   # 새 파드가 Ready 가 되기 전에는 기존 파드를 내리지 않음(이미지 풀 실패 시에도 서비스 유지)
-      maxSurge: 1
+      maxSurge: 2
   selector:
     matchLabels:
       app: ota-api
@@ -49,8 +49,8 @@ spec:
           httpGet:
             path: /health
             port: 80
-          initialDelaySeconds: 3
-          periodSeconds: 3
+          initialDelaySeconds: 1
+          periodSeconds: 2
       volumes:
       - name: app-code
         configMap:
