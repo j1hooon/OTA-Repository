@@ -1,4 +1,4 @@
-import os, json, time, hmac, psycopg2, redis, boto3
+import os, json, time, hmac, uuid, psycopg2, redis, boto3
 import threading, logging
 from datetime import datetime, timezone
 from botocore.config import Config
@@ -302,6 +302,7 @@ def report_status(payload: ReportPayload):
         event = payload.dict()
         event["handled_by_cluster"] = CLUSTER_NAME
         event["queued_at"] = int(time.time())
+        event["event_id"] = uuid.uuid4().hex  # 복귀 후 반영 시 중복 방지 키
         event["fallback_reason"] = str(db_err).strip()
         r.rpush("ota:dr:report_queue", json.dumps(event))
         return {"result": "QUEUED_IN_REDIS_AOF", "handled_by_cluster": CLUSTER_NAME}

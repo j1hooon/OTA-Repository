@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS ota_deployment_history (
     error_code VARCHAR(50),
     duration_ms INTEGER,
     handled_by_cluster VARCHAR(20),
-    completed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    completed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    event_id TEXT  -- DR 큐에서 반영된 이벤트의 중복 방지 키(직접 기록분은 NULL)
 );
 
 CREATE TABLE IF NOT EXISTS device_telemetry_logs (
@@ -41,3 +42,4 @@ CREATE TABLE IF NOT EXISTS device_telemetry_logs (
 
 CREATE INDEX IF NOT EXISTS idx_ota_history_device ON ota_deployment_history(device_id);
 CREATE INDEX IF NOT EXISTS idx_telemetry_recorded_at ON device_telemetry_logs(recorded_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ota_history_event_id ON ota_deployment_history(event_id);
