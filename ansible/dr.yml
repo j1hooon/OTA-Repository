@@ -1,0 +1,28 @@
+---
+# DR(도쿄) K3s 환경 구성. 선행: terraform apply, ansible-playbook site.yml --tags tailscale,dr_db
+#   ansible-playbook dr.yml --ask-vault-pass
+- name: "DR 1: Install K3s on Tokyo DR node"
+  hosts: dr_k3s
+  become: true
+  roles:
+    - role: k3s_dr
+      tags: [k3s_dr]
+
+- name: "DR 2: Merge DR kubeconfig on mgmt"
+  hosts: mgmt
+  become: false
+  roles:
+    - role: kubeconfig_dr
+      tags: [kubeconfig_dr]
+
+- name: "DR 3: Deploy Redis + FastAPI to DR"
+  hosts: mgmt
+  become: false
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Deploy ota_api to DR cluster
+      include_role:
+        name: ota_api
+        tasks_from: dr
+      tags: [ota_api_dr]

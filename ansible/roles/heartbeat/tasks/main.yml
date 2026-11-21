@@ -13,6 +13,26 @@
     mode: '0644'
   notify: Restart ota-heartbeat
 
+- name: Require heartbeat AWS credentials (from Ansible Vault)
+  assert:
+    that:
+      - heartbeat_aws_access_key is defined
+      - heartbeat_aws_secret_access_key is defined
+    fail_msg: "secrets.yml 에 heartbeat_aws_access_key / heartbeat_aws_secret_access_key 를 추가하세요"
+
+- name: Deploy AWS credentials for heartbeat agent (PutMetricData-only user)
+  copy:
+    dest: /etc/default/ota-heartbeat
+    owner: root
+    group: root
+    mode: '0600'
+    content: |
+      AWS_ACCESS_KEY_ID={{ heartbeat_aws_access_key }}
+      AWS_SECRET_ACCESS_KEY={{ heartbeat_aws_secret_access_key }}
+      AWS_DEFAULT_REGION=ap-northeast-1
+  no_log: true
+  notify: Restart ota-heartbeat
+
 - name: Ensure ota-heartbeat service is enabled and started
   systemd:
     name: ota-heartbeat.service

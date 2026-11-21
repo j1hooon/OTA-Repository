@@ -1,0 +1,50 @@
+---
+# DR 클러스터 배포 (include_role: ota_api, tasks_from: dr)
+#  - 서비스: LoadBalancer(ServiceLB) 로 80 직접 수신
+#  - Redis: DR 클러스터 내부(ota-redis), AOF 영속
+#  - DB: DR 복제본(읽기 전용) -> /ota/report 는 Redis 큐로 폴백(QUEUED_IN_REDIS_AOF)
+#  - 상태 소비자(SQS)는 끈다: on-prem 과 동시에 같은 큐를 소비하지 않도록
+- name: Deploy ota-db-secret to DR
+  shell: |
+    cat << 'SECRET_EOF' | kubectl --context=dr apply -f -
+    {{ lookup('template', 'ota-api-secret.yml.j2') }}
+    SECRET_EOF
+  vars:
+    cluster_name: "dr"
+    cluster_cfg: "{{ ota_dr_cluster }}"
+    device_status_queue_url: ""
+  register: dr_secret
+  changed_when: "'configured' in dr_secret.stdout or 'created' in dr_secret.stdout"
+  no_log: true
+
+- name: Deploy DR Redis (PVC + Deployment + Service)
+  shell: |
+    cat << 'REDIS_EOF' | kubectl --context=dr apply -f -
+    {{ lookup('template', 'ota-dr-redis.yml.j2') }}
+    REDIS_EOF
+  register: dr_redis
+  changed_when: "'configured' in dr_redis.stdout or 'created' in dr_redis.stdout"
+
+- name: Wait for DR Redis
+  command: kubectl --context=dr rollout status deployment/ota-redis --timeout=120s
+  changed_when: false
+
+- name: Deploy FastAPI ConfigMap, Deployment, and LoadBalancer Service to DR
+  shell: |
+    cat << 'MANIFEST_EOF' | kubectl --context=dr apply -f -
+    {{ lookup('template', 'ota-api-manifest.yml.j2') }}
+    MANIFEST_EOF
+  vars:
+    cluster_name: "dr"
+    cluster_cfg: "{{ ota_dr_cluster }}"
+    service_type: "LoadBalancer"
+  register: dr_app
+  changed_when: "'configured' in dr_app.stdout or 'created' in dr_app.stdout"
+
+- name: Restart DR API when Secret/ConfigMap changed
+  command: kubectl --context=dr rollout restart deployment ota-api-server
+  when: "'configured' in dr_app.stdout or 'configured' in dr_secret.stdout"
+
+- name: Wait for DR API rollout
+  command: kubectl --context=dr rollout status deployment/ota-api-server --timeout=240s
+  changed_when: false

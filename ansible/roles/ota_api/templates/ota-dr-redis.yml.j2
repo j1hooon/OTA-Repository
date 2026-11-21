@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ota-redis-data
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ota-redis
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ota-redis
+  template:
+    metadata:
+      labels:
+        app: ota-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        command: ["sh", "-c", "exec redis-server --appendonly yes --appendfsync everysec --requirepass \"$REDIS_PASS\""]
+        env:
+        - name: REDIS_PASS
+          valueFrom:
+            secretKeyRef:
+              name: ota-db-secret
+              key: REDIS_PASS
+        - name: REDISCLI_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: ota-db-secret
+              key: REDIS_PASS
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          initialDelaySeconds: 1
+          periodSeconds: 3
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: ota-redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ota-redis
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: ota-redis
+  ports:
+  - port: 6379
+    targetPort: 6379

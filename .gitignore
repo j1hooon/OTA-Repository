@@ -41,3 +41,7 @@ device-sim/device_state.json
 
 # 절체 측정 원본 로그 (summary.csv 는 보존)
 failover-results/run*.log
+
+# Ansible 롤 디렉터리는 추적한다 (kubeconfig* 패턴의 예외)
+!ansible/roles/kubeconfig/
+!ansible/roles/kubeconfig_dr/

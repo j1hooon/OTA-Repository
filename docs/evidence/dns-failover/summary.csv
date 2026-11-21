@@ -1,0 +1,4 @@
+run,fault,alarm_s,failover_auth_s,failover_res_s,failback_auth_s,failback_res_s,valid
+1,agent,none,333,346,80,126,1
+2,agent,none,381,381,40,87,1
+3,agent,none,314,328,33,4,1

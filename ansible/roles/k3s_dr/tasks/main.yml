@@ -1,0 +1,38 @@
+---
+# 도쿄 DR 노드 전용 K3s 설치.
+#  - node-ip 는 VPC 사설 IP(데이터 경로를 Tailscale 에 의존시키지 않음), 관리 접속(kubectl)만 Tailscale
+#  - traefik 은 끈다: ServiceLB 가 80 포트를 직접 받는다
+- name: Install K3s on DR node (private node-ip, Tailscale SAN, no traefik)
+  shell: >
+    curl -sfL https://get.k3s.io | sh -s -
+    --write-kubeconfig-mode 644
+    --node-ip {{ ota_dr_cluster.node_ip }}
+    --advertise-address {{ ota_dr_cluster.node_ip }}
+    --tls-san {{ ansible_host }}
+    --tls-san {{ ota_dr_cluster.node_ip }}
+    --flannel-iface {{ ota_dr_cluster.flannel_iface }}
+    --disable traefik
+  args:
+    creates: /usr/local/bin/k3s
+
+# user_data 가 넣은 80->30080 REDIRECT 는 ServiceLB(80 직접 수신)와 충돌하므로 제거한다.
+- name: Remove live nat REDIRECT 80->30080 rules (if any)
+  shell: |
+    set -e
+    iptables -t nat -S PREROUTING | grep -- '--to-ports 30080' | while read -r rule; do
+      iptables -t nat $(echo "$rule" | sed 's/^-A/-D/')
+    done
+    iptables -t nat -S PREROUTING | grep -c -- '--to-ports 30080' || true
+  register: redirect_left
+  changed_when: false
+
+- name: Remove persisted REDIRECT rule from /etc/iptables/rules.v4
+  lineinfile:
+    path: /etc/iptables/rules.v4
+    regexp: '--to-ports 30080'
+    state: absent
+  failed_when: false
+
+- name: Wait for K3s node Ready
+  command: k3s kubectl wait --for=condition=Ready node --all --timeout=120s
+  changed_when: false
