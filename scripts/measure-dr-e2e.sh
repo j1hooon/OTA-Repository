@@ -2,7 +2,7 @@
 # DR 종단(E2E) 테스트: 하트비트 중단 -> DNS 가 DR 로 전환 -> 그 DNS 응답으로 실제 요청이 DR 에서 처리되는지 확인
 # (DNS 응답만 보는 measure-dns-failover.sh 와 달리, 전환 후 /ota/check, /ota/report 를 DR 로 보낸다)
 #
-# 추가 환경변수: REQS=10 (전환 후 보낼 /ota/check 횟수), DEVICE=ota-dr-tokyo-esp32-device-01
+# 추가 환경변수: REQS=10 (전환 후 보낼 /ota/check 횟수), DEVICE=e2e-probe(기본, 테스트 전용 기기 ID)
 # 참고: 온프레미스(PRIMARY_IP)는 이 랩에서 외부 도달이 불가능하므로 복귀 후 트래픽 검증은 하지 않고 DNS 복귀만 본다.
 # 기존 사용법 (mgmt 에서, 저장소 루트):
 # 사용 (mgmt 에서, 저장소 루트):
@@ -35,7 +35,7 @@ STABLE="${STABLE:-3}"                # 연속 N 번 목표 값이어야 확정
 JUMP="${JUMP:-60}"                  # 폴링 사이 이 초 이상 건너뛰면 무효(절전/일시정지)
 OUTDIR="${OUTDIR:-docs/evidence/dr-e2e}"
 REQS="${REQS:-10}"
-DEVICE="${DEVICE:-ota-dr-tokyo-esp32-device-01}"
+DEVICE="${DEVICE:-e2e-probe}"   # 테스트 전용 기기(실제 기기 행을 오염시키지 않음)
 mkdir -p "$OUTDIR"
 CSV="$OUTDIR/summary.csv"
 echo "run,fault,alarm_s,failover_auth_s,failover_res_s,dr_first_ok_s,dr_ok,dr_total,report_result,failback_auth_s,valid" > "$CSV"
