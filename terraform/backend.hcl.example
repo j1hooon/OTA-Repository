@@ -1,0 +1,7 @@
+# cd terraform/bootstrap && terraform output -raw backend_hcl > ../backend.hcl  로 생성한다
+bucket       = "ota-tfstate-<ACCOUNT_ID>-ap-northeast-1"
+key          = "ota-platform/terraform.tfstate"
+region       = "ap-northeast-1"
+encrypt      = true
+kms_key_id   = "arn:aws:kms:ap-northeast-1:<ACCOUNT_ID>:key/<KEY_ID>"
+use_lockfile = true   # Terraform < 1.10 이면 dynamodb_table = "ota-tfstate-lock"

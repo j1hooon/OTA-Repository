@@ -45,3 +45,6 @@ failover-results/run*.log
 # Ansible 롤 디렉터리는 추적한다 (kubeconfig* 패턴의 예외)
 !ansible/roles/kubeconfig/
 !ansible/roles/kubeconfig_dr/
+
+# Terraform 원격 state 설정(계정 ID 포함)
+terraform/backend.hcl
