@@ -15,7 +15,7 @@
 #   failover_res   : 공개 리졸버(8.8.8.8)가 DR IP 로 응답 (클라이언트 체감, TTL 포함)
 #   failback_*     : 복구 시각 기준 PRIMARY 로 복귀
 #   valid          : 1=정상, 0=무효(시계 점프 = VM 일시정지/절전 의심)
-# FAULT=agent(기본) : 하트비트 서비스 중단 / FAULT=l7 : mgmt HAProxy 컨테이너 중단(에이전트는 살아 있고 /health 만 실패)
+# FAULT=agent(기본) : 하트비트 서비스 중단 / FAULT=l7 : mgmt HAProxy 컨테이너 중단(에이전트는 살아 있고 /health 만 실패) / FAULT=apps : active+standby API 파드를 0 으로 축소(호스트·HAProxy·에이전트 정상, 앱 계층만 전부 장애)
 set -u
 NAME="${NAME:-ota.j1hoon.store}"
 AUTH_NS="${AUTH_NS:?AUTH_NS 필요 (예: ns-1060.awsdns-04.org)}"
@@ -38,7 +38,7 @@ REQS="${REQS:-10}"
 DEVICE="${DEVICE:-e2e-probe}"   # 테스트 전용 기기(실제 기기 행을 오염시키지 않음)
 mkdir -p "$OUTDIR"
 CSV="$OUTDIR/summary.csv"
-echo "run,fault,alarm_s,failover_auth_s,failover_res_s,dr_first_ok_s,dr_ok,dr_total,report_result,failback_auth_s,valid" > "$CSV"
+echo "run,fault,alarm_s,failover_auth_s,failover_res_s,dr_first_ok_s,dr_ok,dr_total,stale,report_result,failback_auth_s,valid" > "$CSV"
 
 now() { if [ -n "${NOW_CMD:-}" ]; then eval "$NOW_CMD"; else date +%s; fi; }
 ip_ans() { local o; o=$(dig +short +time=2 +tries=1 "$NAME" "@$1" 2>/dev/null | head -1)
@@ -47,9 +47,31 @@ alarm_state() { command -v aws >/dev/null 2>&1 || { echo "-"; return; }
                 timeout 8 aws cloudwatch describe-alarms --region "$REGION" --alarm-names "$ALARM" \
                   --query 'MetricAlarms[0].StateValue' --output text 2>/dev/null || echo "?"; }
 
-inject()  { if [ "$FAULT" = l7 ]; then sudo docker stop "$HAPROXY_CONTAINER" >/dev/null; else sudo systemctl stop "$SERVICE"; fi; }
+# FAULT=apps : 호스트/HAProxy/에이전트는 정상, 두 온프레미스 클러스터의 API 파드만 전부 0 으로 축소
+CLUSTERS="${CLUSTERS:-active standby}"
+APP_DEPLOY="${APP_DEPLOY:-ota-api-server}"
+apps_scale() {  # $1=down | up
+  local c n
+  for c in $CLUSTERS; do
+    if [ "$1" = down ]; then
+      n=$(kubectl --context="$c" get deploy "$APP_DEPLOY" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+      [ -n "$n" ] && [ "$n" != 0 ] && echo "$n" > "$OUTDIR/.replicas.$c"
+      kubectl --context="$c" scale deploy/"$APP_DEPLOY" --replicas=0 >/dev/null
+    elif [ -f "$OUTDIR/.replicas.$c" ]; then   # 축소한 적이 있을 때만 원복(중복 호출 안전)
+      kubectl --context="$c" scale deploy/"$APP_DEPLOY" --replicas="$(cat "$OUTDIR/.replicas.$c")" >/dev/null 2>&1 \
+        && rm -f "$OUTDIR/.replicas.$c"
+    fi
+  done
+}
+inject()  { case "$FAULT" in
+              l7)   sudo docker stop "$HAPROXY_CONTAINER" >/dev/null ;;
+              apps) apps_scale down ;;
+              *)    sudo systemctl stop "$SERVICE" ;;
+            esac; }
 restore() { sudo systemctl start "$SERVICE" 2>/dev/null
-            [ "$FAULT" = l7 ] && sudo docker start "$HAPROXY_CONTAINER" >/dev/null 2>&1; return 0; }
+            [ "$FAULT" = l7 ] && sudo docker start "$HAPROXY_CONTAINER" >/dev/null 2>&1
+            [ "$FAULT" = apps ] && apps_scale up
+            return 0; }
 trap restore EXIT INT TERM
 
 # target 을 두 서버가 모두 답할 때까지 폴링. 반환 0=성공 1=시간초과 2=무효(시계 점프)
@@ -105,7 +127,7 @@ for run in $(seq 1 "$RUNS"); do
   if [ "$(drreq "$DR_IP")" != "dr" ]; then
     echo "중단: DR 이 직접 호출에도 응답하지 않음 (http://$DR_IP/ota/check). DR 배포를 먼저 확인하세요." | tee -a "$LOG"; exit 1
   fi
-  T_ALARM=""; VALID=1; OK=0; TOTAL=0; REP="-"; FIRST="-"
+  T_ALARM=""; VALID=1; OK=0; TOTAL=0; STALE=0; REP="-"; FIRST="-"
   echo "$(date +%H:%M:%S) [FAULT:$FAULT] 장애 주입" | tee -a "$LOG"
   T0=$(now); inject
   wait_for "$DR_IP" "$T0" "$LOG" 1; rc=$?
@@ -113,20 +135,33 @@ for run in $(seq 1 "$RUNS"); do
   [ $rc -eq 2 ] && VALID=0
   if [ $rc -eq 0 ]; then
     # 전환 확정 직후: 리졸버가 알려주는 IP 로 요청 REQS 번 + 보고 1번
-    RIP=$(ip_ans "$RESOLVER"); echo "$(date +%H:%M:%S) [E2E] resolver($RESOLVER) 응답 IP=$RIP -> 요청 시작" | tee -a "$LOG"
+    # 요청마다 리졸버에 새로 묻는다. DR IP 로 안내될 때만 DR 로 보내고, 그 밖의 답(집 IP 등)은 stale 로 센다.
+    # (공개 리졸버는 캐시 노드가 여럿이라 전환 직후에도 옛 값을 줄 수 있다. 실제 기기도 같은 영향을 받는다)
+    echo "$(date +%H:%M:%S) [E2E] 요청마다 resolver($RESOLVER) 재조회 -> 안내된 IP 로 전송" | tee -a "$LOG"
     for k in $(seq 1 "$REQS"); do
-      c=$(drreq "$RIP"); TOTAL=$((TOTAL+1))
-      if [ "$c" = dr ]; then OK=$((OK+1)); [ "$FIRST" = "-" ] && FIRST=$(( $(now) - T0 )); fi
-      echo "$(date +%H:%M:%S) check#$k handled_by_cluster=$c" | tee -a "$LOG"; sleep 1
+      rip=$(ip_ans "$RESOLVER"); TOTAL=$((TOTAL+1))
+      if [ "$rip" = "$DR_IP" ]; then
+        c=$(drreq "$rip")
+        if [ "$c" = dr ]; then OK=$((OK+1)); [ "$FIRST" = "-" ] && FIRST=$(( $(now) - T0 )); fi
+      else
+        c="stale(answer=$rip)"; STALE=$((STALE+1))
+      fi
+      echo "$(date +%H:%M:%S) check#$k answer=$rip handled_by_cluster=$c" | tee -a "$LOG"; sleep 1
     done
-    REP=$(drreport "$RIP"); echo "$(date +%H:%M:%S) report result=$REP" | tee -a "$LOG"
+    for t in 1 2 3 4 5 6; do   # 보고도 DR 로 안내될 때까지 최대 6번 재시도
+      rip=$(ip_ans "$RESOLVER")
+      if [ "$rip" = "$DR_IP" ]; then REP=$(drreport "$rip"); break; fi
+      sleep 2
+    done
+    [ "$REP" = "-" ] && REP="stale"
+    echo "$(date +%H:%M:%S) report result=$REP" | tee -a "$LOG"
   fi
   echo "$(date +%H:%M:%S) [RESTORE] 복구" | tee -a "$LOG"
   T1=$(now); restore
   BA="-"
   if [ $VALID -eq 1 ]; then wait_for "$PRIMARY_IP" "$T1" "$LOG" 0; rc=$?; BA="${T_AUTH:-timeout}"; [ $rc -eq 2 ] && VALID=0; fi
-  echo "$run,$FAULT,$AL,$FA,$FR,$FIRST,$OK,$TOTAL,$REP,$BA,$VALID" >> "$CSV"
-  echo "run $run: dns auth=${FA}s res=${FR}s | DR 첫 정상응답=${FIRST}s | check ${OK}/${TOTAL} dr | report=$REP | failback auth=${BA}s | valid=$VALID" | tee -a "$LOG"
+  echo "$run,$FAULT,$AL,$FA,$FR,$FIRST,$OK,$TOTAL,$STALE,$REP,$BA,$VALID" >> "$CSV"
+  echo "run $run: dns auth=${FA}s res=${FR}s | DR 첫 정상응답=${FIRST}s | check ${OK}/${TOTAL} dr (stale ${STALE}) | report=$REP | failback auth=${BA}s | valid=$VALID" | tee -a "$LOG"
   echo "서비스 상태: $(systemctl is-active "$SERVICE" 2>/dev/null)" | tee -a "$LOG"
   [ "$run" -lt "$RUNS" ] && sleep 60
 done

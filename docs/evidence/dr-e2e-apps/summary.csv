@@ -1,0 +1,2 @@
+run,fault,alarm_s,failover_auth_s,failover_res_s,dr_first_ok_s,dr_ok,dr_total,stale,report_result,failback_auth_s,valid
+1,apps,none,324,354,364,7,10,3,QUEUED_IN_REDIS_AOF,54,1
