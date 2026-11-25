@@ -2,8 +2,9 @@ import os, json, time, hmac, uuid, psycopg2, redis, boto3
 import threading, logging
 from datetime import datetime, timezone
 from botocore.config import Config
-from fastapi import FastAPI, HTTPException, Depends, Header
-from pydantic import BaseModel
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from pydantic import BaseModel, Field, model_validator
 
 app = FastAPI(title="ESP32 OTA API Server (AWS IoT Core Hybrid)")
 CLUSTER_NAME = os.getenv("CLUSTER_NAME", "unknown")
@@ -53,12 +54,44 @@ class PublishPayload(BaseModel):
     release_notes: str = "Automated OTA Release"
     target_device: str = "all"
 
+# 입력 제한은 DB 스키마(01-init-schema.sql)와 맞춘다.
+#  - devices.device_id VARCHAR(64), target_version VARCHAR(32)
+#  - ota_deployment_history.status 는 SUCCESS / FAILED / ROLLED_BACK 만 허용(CHECK), error_code VARCHAR(50)
+# 스키마와 다른 값이 들어오면 INSERT 가 실패하고, 아래 보고 경로의 예외 처리가 그것을 "DB 장애"로
+# 오인해 Redis 큐로 보내므로, 경계에서 먼저 걸러낸다.
+DEVICE_ID_PATTERN = r"^[A-Za-z0-9._:-]+$"
+VERSION_PATTERN = r"^[A-Za-z0-9._+-]+$"
+STATUS_PATTERN = r"^(SUCCESS|ROLLED_BACK|FAILED(_[A-Za-z0-9_]{1,40})?)$"
+
 class ReportPayload(BaseModel):
-    device_id: str
-    target_version: str
-    status: str
-    duration_ms: int = 1200
-    rssi: int = -55
+    device_id: str = Field(min_length=1, max_length=64, pattern=DEVICE_ID_PATTERN)
+    target_version: str = Field(min_length=1, max_length=32, pattern=VERSION_PATTERN)
+    # 기기는 실패 사유를 "FAILED_HASH_MISMATCH" 처럼 붙여 보낸다 -> status=FAILED, error_code=HASH_MISMATCH 로 정규화
+    status: str = Field(min_length=1, max_length=48, pattern=STATUS_PATTERN)
+    duration_ms: int = Field(default=1200, ge=0, le=3_600_000)
+    rssi: int = Field(default=-55, ge=-130, le=0)
+    error_code: Optional[str] = Field(default=None, max_length=50)
+
+    @model_validator(mode="after")
+    def _normalize_status(self):
+        if self.status.startswith("FAILED_"):
+            self.error_code = self.error_code or self.status[len("FAILED_"):]
+            self.status = "FAILED"
+        return self
+
+# DR 보고 큐: 상한을 넘으면 새 보고를 받지 않는다(429). 인증 없는 엔드포인트라 무한히 쌓이면
+# Redis 메모리/PVC 가 차서 DR 전체가 죽기 때문이다. LLEN 확인과 RPUSH 를 Lua 로 묶어 원자적으로 처리한다.
+DR_QUEUE_KEY = "ota:dr:report_queue"
+DR_QUEUE_MAX = int(os.getenv("DR_QUEUE_MAX", "10000"))
+_ENQUEUE_LUA = """
+if redis.call('LLEN', KEYS[1]) >= tonumber(ARGV[2]) then return -1 end
+return redis.call('RPUSH', KEYS[1], ARGV[1])
+"""
+
+def enqueue_report(r, event, max_len=None):
+    """큐에 넣으면 큐 길이를, 가득 차서 거절하면 -1 을 반환한다."""
+    return r.eval(_ENQUEUE_LUA, 1, DR_QUEUE_KEY, json.dumps(event),
+                  DR_QUEUE_MAX if max_len is None else max_len)
 
 # ---------------------------------------------------------------------------
 # 기기 상태 수집: IoT Rule -> SQS -> (이 소비자) -> PostgreSQL
@@ -251,7 +284,10 @@ def publish_firmware(payload: PublishPayload):
     }
 
 @app.get("/ota/check")
-def check_update(device_id: str = "esp32-dev-01", current_version: str = "0.9.0"):
+def check_update(
+    device_id: str = Query("esp32-dev-01", min_length=1, max_length=64, pattern=DEVICE_ID_PATTERN),
+    current_version: str = Query("0.9.0", min_length=1, max_length=32, pattern=VERSION_PATTERN),
+):
     r = get_redis()
     cached = r.get("latest_firmware")
     source = "REDIS_CACHE"
@@ -281,28 +317,44 @@ def check_update(device_id: str = "esp32-dev-01", current_version: str = "0.9.0"
 
 @app.post("/ota/report")
 def report_status(payload: ReportPayload):
+    conn = None
     try:
         conn = get_db()
         cur = conn.cursor()
+        if payload.status == "SUCCESS":
+            cur.execute("""
+                INSERT INTO devices (device_id, current_version, updated_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (device_id) DO UPDATE SET current_version = EXCLUDED.current_version, updated_at = CURRENT_TIMESTAMP;
+            """, (payload.device_id, payload.target_version))
+        else:
+            # 실패/롤백 보고는 기기의 현재 버전을 바꾸지 않는다(이력 FK 를 위해 행만 보장).
+            cur.execute("""
+                INSERT INTO devices (device_id, updated_at) VALUES (%s, CURRENT_TIMESTAMP)
+                ON CONFLICT (device_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP;
+            """, (payload.device_id,))
         cur.execute("""
-            INSERT INTO devices (device_id, current_version, updated_at)
-            VALUES (%s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (device_id) DO UPDATE SET current_version = EXCLUDED.current_version, updated_at = CURRENT_TIMESTAMP;
-        """, (payload.device_id, payload.target_version))
-        cur.execute("""
-            INSERT INTO ota_deployment_history (device_id, target_version, status, duration_ms, handled_by_cluster)
-            VALUES (%s, %s, %s, %s, %s);
-        """, (payload.device_id, payload.target_version, payload.status, payload.duration_ms, CLUSTER_NAME))
+            INSERT INTO ota_deployment_history (device_id, target_version, status, error_code, duration_ms, handled_by_cluster)
+            VALUES (%s, %s, %s, %s, %s, %s);
+        """, (payload.device_id, payload.target_version, payload.status, payload.error_code,
+              payload.duration_ms, CLUSTER_NAME))
         conn.commit()
         cur.close()
         conn.close()
         return {"result": "RECORDED_IN_DB", "handled_by_cluster": CLUSTER_NAME}
     except Exception as db_err:
+        if conn is not None:
+            try:
+                conn.close()  # 예외 경로에서 연결이 새지 않도록 닫는다
+            except Exception:
+                pass
         r = get_redis()
-        event = payload.dict()
+        event = payload.model_dump()
         event["handled_by_cluster"] = CLUSTER_NAME
         event["queued_at"] = int(time.time())
         event["event_id"] = uuid.uuid4().hex  # 복귀 후 반영 시 중복 방지 키
-        event["fallback_reason"] = str(db_err).strip()
-        r.rpush("ota:dr:report_queue", json.dumps(event))
+        event["fallback_reason"] = str(db_err).strip()[:300]
+        if enqueue_report(r, event) == -1:
+            raise HTTPException(status_code=429, detail="Report queue is full; retry later",
+                                headers={"Retry-After": "60"})
         return {"result": "QUEUED_IN_REDIS_AOF", "handled_by_cluster": CLUSTER_NAME}

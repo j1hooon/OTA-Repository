@@ -63,16 +63,18 @@ APPLY = """
 WITH e AS (SELECT :'ev'::jsonb AS j, :'eid'::text AS id),
 ts AS (SELECT to_timestamp(COALESCE((j->>'queued_at')::bigint, extract(epoch from now())::bigint)) AS t FROM e),
 d AS (
+  -- 현재 버전은 성공 보고일 때만 바꾼다(실패/롤백은 NULL -> COALESCE 로 기존 값 유지)
   INSERT INTO devices (device_id, current_version, updated_at)
-  SELECT j->>'device_id', j->>'target_version', ts.t FROM e, ts
+  SELECT j->>'device_id', CASE WHEN j->>'status' = 'SUCCESS' THEN j->>'target_version' END, ts.t FROM e, ts
   ON CONFLICT (device_id) DO UPDATE
-    SET current_version = EXCLUDED.current_version, updated_at = EXCLUDED.updated_at
+    SET current_version = COALESCE(EXCLUDED.current_version, devices.current_version),
+        updated_at = EXCLUDED.updated_at
     WHERE devices.updated_at < EXCLUDED.updated_at
   RETURNING 1),
 h AS (
   INSERT INTO ota_deployment_history
-    (device_id, target_version, status, duration_ms, handled_by_cluster, completed_at, event_id)
-  SELECT j->>'device_id', j->>'target_version', j->>'status', (j->>'duration_ms')::int,
+    (device_id, target_version, status, error_code, duration_ms, handled_by_cluster, completed_at, event_id)
+  SELECT j->>'device_id', j->>'target_version', j->>'status', j->>'error_code', (j->>'duration_ms')::int,
          COALESCE(j->>'handled_by_cluster','dr'), ts.t, e.id FROM e, ts
   ON CONFLICT (event_id) DO NOTHING
   RETURNING 1)
@@ -103,8 +105,12 @@ def main():
     for raw in raw_list:
         try:
             ev = json.loads(raw)
-            eid = event_id(raw, ev)
-            out = psql(APPLY, f"ev={raw}", f"eid={eid}").stdout.strip()
+            eid = event_id(raw, ev)          # 멱등 키는 정규화 전 원문 기준(재실행해도 같은 값)
+            st = str(ev.get("status", ""))
+            if st.startswith("FAILED_"):     # 검증 도입 전 파드가 쌓은 "FAILED_<사유>" 를 현재 형식으로
+                ev["error_code"] = ev.get("error_code") or st[len("FAILED_"):][:50]
+                ev["status"] = "FAILED"
+            out = psql(APPLY, f"ev={json.dumps(ev)}", f"eid={eid}").stdout.strip()
             if out == "1": ins += 1
             else: dup += 1
         except Exception as e:
