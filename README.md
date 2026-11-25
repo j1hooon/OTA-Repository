@@ -84,7 +84,8 @@ flowchart LR
 - **알람 경로**: 장애 중 CloudWatch 알람은 `OK`로 남았고 Route 53 헬스체크가 먼저 `Unhealthy`가 됐습니다. 원인을 "Route 53이 지표 부재를 직접 평가한다"로 추정하지만 AWS 문서로 확인하지는 않았습니다.
 - **RPO(데이터 손실 허용량)**: DB 복제는 비동기이고 복제 지연을 측정하지 않았습니다.
 - **복구 후 데이터 정합성은 수동**: DR에서 쌓인 보고는 `scripts/drain-dr-queue.py`를 실행해야 원본 DB에 반영됩니다. 자동화되어 있지 않습니다.
-- **기기 인증**: `/ota/check`, `/ota/report`에는 기기 인증이 없습니다(`/ota/publish`, `/ota/status`만 API 키 보호).
+- **기기 인증**: `/ota/check`, `/ota/report`에는 기기 인증이 없습니다(`/ota/publish`, `/ota/status`만 API 키 보호). 대신 입력 검증(길이·형식·허용 상태값)과 DR 보고 큐 상한(기본 10,000건, 초과 시 429)을 두어 남용의 영향을 제한합니다. 인증이 없다는 한계가 사라진 것은 아닙니다. 근거는 [증거 색인 8장](docs/evidence/README.md#8-otareport-입력-검증과-dr-큐-상한).
+- **멱등성**: 온프레미스 경로의 `/ota/report`는 기기가 재시도하면 이력에 같은 보고가 중복될 수 있습니다(요청 단위 ID가 없음). 중복 방지 키(`event_id`)는 DR 큐 경로에서만 만들어집니다.
 - **DR 규모**: 단일 노드이며 부하 시험은 하지 않았습니다.
 - **DB 부하와 빌드 I/O**: 위 표에 적은 대로 정량 증거가 레포에 없습니다.
 
@@ -97,13 +98,15 @@ terraform/bootstrap/  # Terraform state 보호용 S3 + KMS (별도 부트스트�
 docker/ota-api/       # FastAPI 베이스 이미지 (GitHub Actions가 ghcr.io로 빌드)
 jenkins/Jenkinsfile   # 펌웨어 빌드/벤치마크/업로드/배포 파이프라인
 device-sim/           # 가상 기기 시뮬레이터
-scripts/              # 측정 스크립트, DR 큐 반영기
+scripts/              # 측정 스크립트(절체, DNS, DR 종단, 롤아웃), DR 큐 반영기
+tests/                # /ota/report 입력 검증·큐 상한 단위 시험 (CI에서 실행)
 docs/                 # 아키텍처, 증거
+.github/workflows/    # build-ota-api(이미지 빌드), validate(시크릿 스캔, terraform, 셸·Python 검사, 시험, ansible-lint)
 ```
 
 ## 6. 구성 순서
 
-비밀 값(`ansible/secrets.yml`, Terraform 변수)은 레포에 없습니다. Vault 암호와 `TF_VAR_*` 환경변수를 직접 준비해야 합니다.
+비밀 값(`ansible/secrets.yml`, Terraform 변수)은 레포에 없습니다. Vault 암호와 `TF_VAR_*` 환경변수를 직접 준비해야 합니다. 환경별 인벤토리도 추적하지 않으므로 먼저 `cp ansible/inventory.ini.example ansible/inventory.ini` 로 만들고 Tailscale IP 등을 채웁니다.
 
 1. `terraform/bootstrap`에서 state 버킷과 KMS 키 생성 → `terraform/backend.hcl` 저장 → `terraform init -migrate-state -backend-config=backend.hcl`
 2. `terraform apply` (DR VPC, EC2 2대, IoT, S3+CloudFront, Route 53, 하트비트 IAM)
@@ -118,6 +121,7 @@ docs/                 # 아키텍처, 증거
 - Terraform state에는 IAM 키와 디바이스 개인키가 들어가므로 S3(KMS 고객 관리 키, 버전닝, 퍼블릭 차단, TLS 강제, S3 네이티브 잠금)로 옮겼습니다. 암호화는 저장 매체 유출을 막을 뿐, AWS 권한이 있는 주체의 읽기까지 막지는 못합니다.
 - DR EC2에는 SSH 키 페어가 없고 Tailscale SSH와 SSM으로만 접속합니다. DB 보안 그룹은 DR K3s 노드에서 오는 5432만 허용합니다.
 - 공개 저장소이므로 증거 로그의 집 공인 IP는 `<ONPREM_PUBLIC_IP>`로 치환해서 올렸습니다.
+- `.github/workflows/validate.yml`이 푸시와 PR마다 이력 전체의 시크릿 스캔(gitleaks), `terraform fmt/validate`, 셸·Python 문법 검사, 단위 시험, `ansible-lint`(보고용)를 실행합니다.
 
 ## 8. 로드맵
 

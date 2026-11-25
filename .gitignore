@@ -48,3 +48,6 @@ failover-results/run*.log
 
 # Terraform 원격 state 설정(계정 ID 포함)
 terraform/backend.hcl
+
+# 환경별 인벤토리(Tailscale IP 등). 예시는 ansible/inventory.ini.example
+ansible/inventory.ini

@@ -80,8 +80,24 @@
 
 | 주장 | 상태 |
 |---|---|
-| 롤아웃 시간 25.1초 → 6.5초 | 커밋 `10f96bf` 메시지에만 있음. 원본 로그 없음 |
+| 롤아웃 시간 25.1초 → 6.5초 | 커밋 `10f96bf` 메시지에만 있음. 원본 로그 없음. 현재 구성의 롤아웃은 `scripts/measure-rollout.sh`로 측정해 `rollout/`에 남길 수 있게 했으나 **아직 실행하지 않음**. 이전 구성(25.1초)은 재현하지 않으므로 비교 근거는 되지 않음 |
 | Redis 캐시의 DB 부하 감소 효과 | 정량 증거 없음(캐시 동작만 확인) |
-| RAM 디스크 대비 디스크 I/O 벤치마크 | Jenkins 빌드 로그에만 있음 |
+| RAM 디스크 대비 디스크 I/O 벤치마크 | Jenkins 빌드 로그에만 있음. 콘솔 로그를 `jenkins-benchmark/`에 저장하면 증거가 됨(**아직 저장하지 않음**) |
 | Terraform 원격 state 검증 | 출력에 계정 ID가 있어 보관하지 않음(`head-object`로 `aws:kms`, 버전닝 `Enabled`, 리소스 수 60개 유지, `terraform plan`이 `No changes`임을 확인) |
 | 복제 지연(RPO) | 측정하지 않음 |
+
+## 8. /ota/report 입력 검증과 DR 큐 상한
+
+- **계기**: 레포의 스키마(`01-init-schema.sql`)와 기기 시뮬레이터의 전송값을 맞대어 보니, 정상 동작하는 DB에서도 실패 보고가 거절되는 불일치가 있었습니다. `ota_deployment_history.status`는 `SUCCESS/FAILED/ROLLED_BACK`만 허용(CHECK)하고 `VARCHAR(20)`인데, 시뮬레이터는 `FAILED_HASH_MISMATCH`, `FAILED_DOWNLOAD_ERROR`(21자) 같은 값을 보냅니다. 기존 코드는 DB 오류를 모두 "DB 장애"로 보고 Redis 큐로 보내므로, 이런 보고가 DB에 닿지 않고 큐에 쌓일 수 있었습니다. 같은 스키마(실제 PostgreSQL 16)에 기존 SQL을 그대로 실행해 CHECK 위반(`FAILED_HASH_MISMATCH`), 길이 초과(`FAILED_DOWNLOAD_ERROR`, 65자 `device_id`)를 재현했습니다.
+- **변경**
+  - `ReportPayload`: `device_id` 64자·`target_version` 32자·허용 문자, `status`는 `SUCCESS/ROLLED_BACK/FAILED[_사유]`만 허용하고 `FAILED_<사유>`를 `status=FAILED` + `error_code=<사유>`로 정규화, `duration_ms`·`rssi` 범위 제한. `/ota/check`의 쿼리 값에도 같은 길이·형식 제한.
+  - DR 큐: 상한(`DR_QUEUE_MAX`, 기본 10,000) 초과 시 429(`Retry-After: 60`). 길이 확인과 적재를 Redis Lua로 묶어 원자적으로 처리.
+  - 실패·롤백 보고는 기기의 현재 버전을 바꾸지 않음(기존에는 모든 보고가 `current_version`을 갱신). `scripts/drain-dr-queue.py`도 같은 규칙을 따르고, 검증 도입 전에 쌓인 `FAILED_<사유>` 이벤트를 dead-letter로 보내지 않고 정규화해서 반영.
+- **시험**
+  - `tests/test_report_api.py`(8개): `main.py`에서 모델과 큐 함수를 추출해 실제 Redis(`redis-server`)로 실행. 입력 거절 10종, 정규화, 상한 경계(상한 3: 1·2·3 적재 후 거절 2건, 큐 길이 3 유지), 드레인 후 재적재. 상한 비교를 `>`로 바꾸거나 상태 패턴을 느슨하게 만드는 변이를 주면 시험이 실패하는 것을 확인했습니다. CI(`validate.yml`)는 배포 이미지와 같은 pydantic 2.6.4로 실행합니다.
+  - SQL: `main.py`에서 추출한 실제 문장을 PostgreSQL 16에 실행해, 실패 보고가 CHECK 위반 없이 기록되고 `error_code`가 저장되며 기기 버전이 유지됨을 확인. 드레인은 실제 PostgreSQL 16과 Redis 7로 신규 3 + 중복 1 + dead-letter 1, 정규화 2 + dead-letter 2(알 수 없는 상태값, JSON 아님)를 확인.
+- **한계**
+  - 위 시험은 개발 환경에서 돌렸고 로그는 보관하지 않았습니다(`tests/`는 재현 가능). FastAPI 앱 전체와 K3s 클러스터에 배포한 상태의 시험은 **아직 하지 않았습니다**.
+  - 큐 상한이 DR 자원을 보호한다는 것을 부하로 확인하지는 않았습니다(상한 로직만 시험).
+  - DB 예외를 모두 큐 보관으로 처리하는 구조는 유지했습니다(DR 복제본의 읽기 전용 오류 경로를 실제 psycopg2로 시험할 수 없어서). 입력 검증으로 알려진 원인은 줄였지만, 그 밖의 DB 오류도 큐로 갑니다.
+  - 인증이 없는 한계는 그대로입니다. 완화일 뿐입니다.
