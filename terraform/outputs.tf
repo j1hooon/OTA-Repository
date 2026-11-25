@@ -64,8 +64,8 @@ output "iot_thing_name" {
 }
 
 output "device_certificate_pem" {
-  sensitive   = true
-  value = module.iot.device_certificate_pem
+  sensitive = true
+  value     = module.iot.device_certificate_pem
 }
 
 output "device_private_key" {
