@@ -1,6 +1,6 @@
 ---
 - name: Restart ota-heartbeat
-  systemd:
+  ansible.builtin.systemd:
     name: ota-heartbeat.service
     daemon_reload: true
     state: restarted

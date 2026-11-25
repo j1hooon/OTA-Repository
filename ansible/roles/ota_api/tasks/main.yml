@@ -1,7 +1,7 @@
 ---
 - name: Wait for PostgreSQL TCP listener before inserting baseline firmware
   become: true
-  command: >
+  ansible.builtin.command: >
     docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
     psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -tAc
     "SELECT to_regclass('public.firmware_releases');"
@@ -14,7 +14,7 @@
 
 - name: Insert initial baseline firmware (v1.0.0) into PostgreSQL over TCP
   become: true
-  command: >
+  ansible.builtin.command: >
     docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
     psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -c
     "INSERT INTO firmware_releases (version, s3_url, sha256_hash, file_size_bytes, release_notes)
@@ -26,7 +26,7 @@
   no_log: true
 
 - name: Deploy ota-db-secret to each target cluster
-  shell: |
+  ansible.builtin.shell: |
     cat << 'SECRET_EOF' | kubectl --context={{ item.key }} apply -f -
     {{ lookup('template', 'ota-api-secret.yml.j2') }}
     SECRET_EOF
@@ -39,7 +39,7 @@
   no_log: true
 
 - name: Deploy FastAPI ConfigMap, Deployment, and Service (ota-api-svc)
-  shell: |
+  ansible.builtin.shell: |
     cat << 'MANIFEST_EOF' | kubectl --context={{ item.key }} apply -f -
     {{ lookup('template', 'ota-api-manifest.yml.j2') }}
     MANIFEST_EOF
@@ -51,7 +51,7 @@
   changed_when: "'configured' in app_manifest.stdout or 'created' in app_manifest.stdout"
 
 - name: Rollout restart FastAPI deployments when Secret or ConfigMap is updated (configured)
-  command: "kubectl --context={{ item.0.item.key }} rollout restart deployment ota-api-server"
+  ansible.builtin.command: "kubectl --context={{ item.0.item.key }} rollout restart deployment ota-api-server"
   loop: "{{ app_manifest.results | zip(secret_manifest.results) | list }}"
   loop_control:
     label: "{{ item.0.item.key }}"

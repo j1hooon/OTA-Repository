@@ -4,12 +4,12 @@
 - name: Fetch k3s.yaml from DR node
   delegate_to: "{{ groups['dr_k3s'][0] }}"
   become: true
-  slurp:
+  ansible.builtin.slurp:
     src: /etc/rancher/k3s/k3s.yaml
   register: dr_kubeconfig
 
 - name: Ensure ~/.kube exists
-  file:
+  ansible.builtin.file:
     path: /home/ubuntu/.kube
     state: directory
     owner: ubuntu
@@ -18,7 +18,7 @@
 
 # dr.yaml 은 남겨 둔다: 이후 kubeconfig 롤(site.yml --tags kubeconfig)이 *.yaml 을 합칠 때 dr 도 포함된다.
 - name: Write DR kubeconfig (context name = dr, server = Tailscale IP)
-  copy:
+  ansible.builtin.copy:
     dest: /home/ubuntu/.kube/dr.yaml
     owner: ubuntu
     group: ubuntu
@@ -31,7 +31,7 @@
 
 - name: Merge dr.yaml into existing ~/.kube/config (keeps other contexts)
   become: false
-  shell: |
+  ansible.builtin.shell: |
     set -e
     cd /home/ubuntu/.kube
     if [ -f config ]; then SRC="config:dr.yaml"; else SRC="dr.yaml"; fi

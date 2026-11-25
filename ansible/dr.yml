@@ -22,7 +22,7 @@
     - secrets.yml
   tasks:
     - name: Deploy ota_api to DR cluster
-      include_role:
+      ansible.builtin.include_role:
         name: ota_api
         tasks_from: dr
       tags: [ota_api_dr]

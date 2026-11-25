@@ -1,27 +1,27 @@
 ---
 - name: Deploy L7 Heartbeat Agent Script
-  template:
+  ansible.builtin.template:
     src: heartbeat_agent.sh.j2
     dest: /usr/local/bin/ota-heartbeat-agent.sh
     mode: '0755'
   notify: Restart ota-heartbeat
 
 - name: Deploy Systemd Unit for Heartbeat Agent
-  template:
+  ansible.builtin.template:
     src: ota-heartbeat.service.j2
     dest: /etc/systemd/system/ota-heartbeat.service
     mode: '0644'
   notify: Restart ota-heartbeat
 
 - name: Require heartbeat AWS credentials (from Ansible Vault)
-  assert:
+  ansible.builtin.assert:
     that:
       - heartbeat_aws_access_key is defined
       - heartbeat_aws_secret_access_key is defined
     fail_msg: "secrets.yml 에 heartbeat_aws_access_key / heartbeat_aws_secret_access_key 를 추가하세요"
 
 - name: Deploy AWS credentials for heartbeat agent (PutMetricData-only user)
-  copy:
+  ansible.builtin.copy:
     dest: /etc/default/ota-heartbeat
     owner: root
     group: root
@@ -34,7 +34,7 @@
   notify: Restart ota-heartbeat
 
 - name: Ensure ota-heartbeat service is enabled and started
-  systemd:
+  ansible.builtin.systemd:
     name: ota-heartbeat.service
     daemon_reload: true
     enabled: true

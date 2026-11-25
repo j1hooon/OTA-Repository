@@ -1,6 +1,6 @@
 ---
 - name: Install K3s bound to fixed IP
-  shell: >
+  ansible.builtin.shell: >
     curl -sfL https://get.k3s.io | sh -s -
     --write-kubeconfig-mode 644
     --node-ip {{ ansible_host }}

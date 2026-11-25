@@ -1,13 +1,13 @@
 ---
 - name: Verify mgmt_tailscale_ip is non-empty before binding PostgreSQL
-  assert:
+  ansible.builtin.assert:
     that:
       - mgmt_tailscale_ip is defined
       - mgmt_tailscale_ip | length > 0
     fail_msg: "mgmt_tailscale_ip is empty! Make sure Tailscale is up before configuring control_tower."
 
 - name: Create Control Tower config directories (with ubuntu owner/mode)
-  file:
+  ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     owner: ubuntu
@@ -20,7 +20,7 @@
     - "{{ control_dir }}/jenkins_home"
 
 - name: Ensure container data directories exist (preserve container-managed uid/mode)
-  file:
+  ansible.builtin.file:
     path: "{{ item }}"
     state: directory
   loop:
@@ -28,27 +28,27 @@
     - "{{ control_dir }}/redis/data"
 
 - name: Copy PostgreSQL Schema Init Script
-  copy:
+  ansible.builtin.copy:
     src: 01-init-schema.sql
     dest: "{{ control_dir }}/postgres/init/01-init-schema.sql"
     mode: '0644'
 
 - name: Render HAProxy Configuration
-  template:
+  ansible.builtin.template:
     src: haproxy.cfg.j2
     dest: "{{ control_dir }}/haproxy/haproxy.cfg"
     mode: '0644'
   notify: Restart HAProxy
 
 - name: Render Docker Compose Configuration
-  template:
+  ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ control_dir }}/docker-compose.yml"
     mode: '0600'
   no_log: true
 
 - name: Create Jenkins image build context directory
-  file:
+  ansible.builtin.file:
     path: "{{ control_dir }}/jenkins"
     state: directory
     owner: ubuntu
@@ -56,20 +56,20 @@
     mode: '0755'
 
 - name: Copy custom Jenkins Dockerfile (gcc, bc, psql, redis-cli, aws cli, kubectl)
-  copy:
+  ansible.builtin.copy:
     src: jenkins.Dockerfile
     dest: "{{ control_dir }}/jenkins/Dockerfile"
     mode: '0644'
 
 - name: Start Control Tower Containers (build custom Jenkins image)
-  command: docker compose up -d --build
+  ansible.builtin.command: docker compose up -d --build
   args:
     chdir: "{{ control_dir }}"
   register: compose_up
   changed_when: "'Started' in compose_up.stderr or 'Created' in compose_up.stderr or 'Recreated' in compose_up.stderr"
 
 - name: Wait for PostgreSQL TCP listener (post-initdb final server) and schema
-  command: >
+  ansible.builtin.command: >
     docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
     psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -tAc
     "SELECT to_regclass('public.firmware_releases');"
@@ -81,14 +81,14 @@
   no_log: true
 
 - name: Allow PostgreSQL Streaming Replication from Tailscale CGNAT (100.64.0.0/10)
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: "{{ control_dir }}/postgres/data/pg_hba.conf"
     line: "host replication ota_admin 100.64.0.0/10 scram-sha-256"
     state: present
   register: pg_hba_rule
 
 - name: Reload PostgreSQL configuration immediately over TCP
-  command: >
+  ansible.builtin.command: >
     docker exec -e PGPASSWORD={{ pg_password | quote }} ota-postgres
     psql -h {{ mgmt_internal_ip }} -p 5432 -U ota_admin -d ota_db -c "SELECT pg_reload_conf();"
   when: pg_hba_rule.changed

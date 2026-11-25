@@ -1,13 +1,13 @@
 ---
 - name: Verify primary_tailscale_ip is available
-  assert:
+  ansible.builtin.assert:
     that:
       - primary_tailscale_ip is defined
       - primary_tailscale_ip | length > 0
     fail_msg: "primary_tailscale_ip is not defined!"
 
 - name: Create DR Postgres directories owned by uid/gid 70 (postgres in alpine)
-  file:
+  ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     owner: "70"
@@ -18,12 +18,12 @@
     - /opt/ota-dr-postgres/data
 
 - name: Check if standby.signal already exists
-  stat:
+  ansible.builtin.stat:
     path: /opt/ota-dr-postgres/data/standby.signal
   register: standby_sig
 
 - name: Run pg_basebackup from On-Premise Primary DB over Tailscale (--user 70:70)
-  shell: |
+  ansible.builtin.shell: |
     docker run --rm --user 70:70 \
       -e PGPASSWORD="{{ pg_password }}" \
       -v /opt/ota-dr-postgres/data:/var/lib/postgresql/data \
@@ -33,13 +33,13 @@
   no_log: true
 
 - name: Render DR Postgres Docker Compose file
-  template:
+  ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: /opt/ota-dr-postgres/docker-compose.yml
     mode: '0600'
 
 - name: Ensure DR Postgres Standby Container is running via Docker Compose
-  command: docker compose up -d
+  ansible.builtin.command: docker compose up -d
   args:
     chdir: /opt/ota-dr-postgres
   register: dr_compose_up
