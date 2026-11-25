@@ -1,0 +1,84 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 이력 전체에서 키·토큰 같은 비밀이 새지 않았는지 검사한다.
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # state 백엔드·자격증명 없이 문법과 모듈 연결만 검증한다(-backend=false).
+  terraform:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [terraform, terraform/bootstrap]
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"   # required_version(>= 1.10.0)의 하한에서 검증
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 셸 스크립트 문법 오류(error 등급)
+        run: shellcheck --severity=error scripts/*.sh
+      - name: 셸 스크립트 경고(참고용, 실패로 치지 않음)
+        run: shellcheck --severity=warning scripts/*.sh
+        continue-on-error: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"        # docker/ota-api 이미지와 같은 버전
+      - name: Python 문법 검사
+        run: python -m py_compile scripts/drain-dr-queue.py ansible/roles/ota_api/files/main.py device-sim/ota_device.py
+
+  # /ota/report 입력 검증과 DR 큐 상한. pydantic 은 docker/ota-api/Dockerfile 의 고정 버전과 같게 맞춘다.
+  api-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pydantic==2.6.4
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: python -m unittest discover -s tests -v
+
+  # 처음에는 보고용이다. 위반을 정리한 뒤 continue-on-error 를 지우면 차단 검사가 된다.
+  ansible-lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ansible-lint
+      - run: ansible-lint ansible/
