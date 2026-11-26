@@ -30,6 +30,7 @@
       postgres:16-alpine \
       sh -c "rm -rf /var/lib/postgresql/data/* && pg_basebackup -h {{ primary_tailscale_ip }} -p 5432 -U ota_admin -D /var/lib/postgresql/data -Fp -Xs -P -R"
   when: not standby_sig.stat.exists
+  changed_when: true
   no_log: true
 
 - name: Render DR Postgres Docker Compose file

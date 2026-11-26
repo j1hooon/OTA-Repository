@@ -56,3 +56,4 @@
   loop_control:
     label: "{{ item.0.item.key }}"
   when: "'configured' in item.0.stdout or 'configured' in item.1.stdout"
+  changed_when: true

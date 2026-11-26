@@ -44,6 +44,7 @@
 - name: Restart DR API when Secret/ConfigMap changed
   ansible.builtin.command: kubectl --context=dr rollout restart deployment ota-api-server
   when: "'configured' in dr_app.stdout or 'configured' in dr_secret.stdout"
+  changed_when: true
 
 - name: Wait for DR API rollout
   ansible.builtin.command: kubectl --context=dr rollout status deployment/ota-api-server --timeout=240s

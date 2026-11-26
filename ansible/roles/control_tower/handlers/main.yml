@@ -1,3 +1,4 @@
 ---
 - name: Restart HAProxy
   ansible.builtin.command: docker restart ota-haproxy
+  changed_when: true

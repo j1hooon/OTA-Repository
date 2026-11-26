@@ -34,6 +34,7 @@
     KUBECONFIG=$(ls /home/ubuntu/.kube/*.yaml | tr '\n' ':') \
     kubectl config view --flatten > /home/ubuntu/.kube/config
     chmod 600 /home/ubuntu/.kube/config
+  changed_when: true
 
 - name: Clean up temporary per-node kubeconfig files
   ansible.builtin.file:

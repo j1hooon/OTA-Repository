@@ -15,6 +15,7 @@
   ansible.builtin.command: "tailscale up --authkey={{ tailscale_auth_key }} --ssh"
   when: ts_ip_out.rc != 0 or ts_ip_out.stdout | trim == ""
   no_log: true
+  changed_when: true
   tags: [always]
 
 - name: Re-fetch Tailscale IPv4 address

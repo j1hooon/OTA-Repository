@@ -1,0 +1,25 @@
+---
+# 린트는 CI(.github/workflows/validate.yml)에서 `ansible-lint ansible/` 로 실행된다.
+# 아래 규칙은 위반을 알고 있으나 아직 고치지 않은 것이다. 숨기지 않고 실패가 아닌 "경고"로 표시한다.
+# 규칙마다 사유와 계획을 적어 두었고, 고치면 이 목록에서 지운다.
+warn_list:
+  # 19건. register 변수 이름(예: pg_ready -> ota_api_pg_ready)과 사용처를 함께 바꾸는 리팩터링이다.
+  # 배포 시험과 함께 별도로 진행한다. mgmt_tailscale_ip 는 다른 롤에서도 쓰여서 영향 범위 확인이 필요하다.
+  - var-naming[no-role-prefix]
+
+  # 11건. curl | sh 설치 스크립트 4건, `cat <<EOF | kubectl apply` 5건, kubeconfig 병합 1건, iptables 루프 1건.
+  # 일괄로 pipefail 을 켜면 iptables | grep 처럼 "일치 없음"(grep 종료 코드 1)이 실패로 바뀌는 작업이 있어서
+  # 작업별로 검토한 뒤 고친다.
+  - risky-shell-pipe
+
+  # 4건. K3s, Docker, Tailscale 공식 설치 스크립트(curl | sh). 버전 고정(INSTALL_K3S_VERSION 등)과 함께 정리할 예정이다.
+  - command-instead-of-module
+
+  # 1건. control_tower 의 "Reload PostgreSQL configuration immediately over TCP".
+  # pg_hba 규칙이 바뀔 때만 pg_reload_conf() 를 호출한다. 이 작업 뒤에 이어지는 작업은 없어서 handler 로 옮겨도
+  # 같은 play 끝에서 실행되므로 동작 차이는 작을 것으로 보이지만, 복제(DR) 재구성으로 시험하지 않아서 아직 바꾸지 않았다.
+  - no-handler
+
+  # 1건. control_tower 의 postgres/data, redis/data 디렉터리. 컨테이너가 만들고 소유하는 경로라서 mode 를 지정하지 않는다.
+  # PostgreSQL 은 데이터 디렉터리 권한이 0700/0750 이 아니면 시작을 거부하므로 여기서 mode 로 덮어쓰면 깨질 수 있다.
+  - risky-file-permissions
