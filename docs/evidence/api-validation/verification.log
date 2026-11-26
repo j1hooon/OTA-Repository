@@ -1,0 +1,106 @@
+# /ota/report 입력 검증·큐 상한 수정의 배포 후 확인
+# 일시: 2026-11-26 13:40~13:45 KST, 실행 위치: mgmt VM(~/ota-platform)
+# 배포: ansible-playbook site.yml --tags ota_api (온프레미스 Active/Standby), ansible-playbook dr.yml (DR)
+# 코드: ansible/roles/ota_api/files/main.py 는 f8e8f22 이후 변경 없음, scripts/drain-dr-queue.py 는 f8e8f22 의 것
+# 표기: DR 공개 IP는 <DR_PUBLIC_IP> 로 치환. 출력은 붙여넣은 그대로이며 명령 사이의 설명만 '#' 로 덧붙임.
+# 시험 데이터는 전용 기기 ID(verify-probe)를 썼고 끝에 삭제했다.
+
+############ 1. 온프레미스(HAProxy -> Active) ############
+$ API=http://172.16.10.1:8000
+$ curl -s -o /dev/null -w 'PWNED status -> %{http_code}\n' -X POST $API/ota/report -H 'Content-Type: application/json' \
+    -d '{"device_id":"verify-probe","target_version":"0.0.0-verify","status":"PWNED"}'
+PWNED status -> 422
+
+$ curl -s -X POST $API/ota/report -H 'Content-Type: application/json' \
+    -d '{"device_id":"verify-probe","target_version":"0.0.0-verify","status":"FAILED_HASH_MISMATCH"}'
+{"result":"RECORDED_IN_DB","handled_by_cluster":"active"}
+
+$ docker exec ota-postgres psql -U ota_admin -d ota_db -c "SELECT device_id,target_version,status,error_code FROM ota_deployment_history WHERE device_id='verify-probe';" -c "SELECT device_id,current_version FROM devices WHERE device_id='verify-probe';"
+  device_id   | target_version | status |  error_code
+--------------+----------------+--------+---------------
+ verify-probe | 0.0.0-verify   | FAILED | HASH_MISMATCH
+(1 row)
+
+  device_id   | current_version
+--------------+-----------------
+ verify-probe |
+(1 row)
+
+# 정리
+$ docker exec ota-postgres psql -U ota_admin -d ota_db -c "DELETE FROM ota_deployment_history WHERE device_id='verify-probe'; DELETE FROM devices WHERE device_id='verify-probe';"
+DELETE 1
+DELETE 1
+
+############ 2. DR(도쿄) ############
+$ DR=http://<DR_PUBLIC_IP>
+$ curl -s $DR/health
+{"status":"UP","cluster":"dr","db":"CONNECTED","redis":"CONNECTED"}
+
+$ curl -s -X POST $DR/ota/report -H 'Content-Type: application/json' \
+    -d '{"device_id":"verify-probe","target_version":"0.0.0-verify","status":"FAILED_HASH_MISMATCH"}'
+{"result":"QUEUED_IN_REDIS_AOF","handled_by_cluster":"dr"}
+
+$ curl -s -o /dev/null -w 'PWNED -> %{http_code}\n' -X POST $DR/ota/report -H 'Content-Type: application/json' \
+    -d '{"device_id":"verify-probe","target_version":"0.0.0-verify","status":"PWNED"}'
+PWNED -> 422
+
+############ 3. 드레인(DR Redis -> 운영 DB), 수정된 scripts/drain-dr-queue.py ############
+# 큐에는 방금 넣은 verify-probe 1건 외에, 11/23 측정 스크립트가 남긴 e2e-probe 이벤트 2건
+# (queued_at 01:36:28, 01:46:25 KST)이 드레인되지 않은 채 남아 있었다. 검증 도입 전 형식(error_code 필드 없음)이다.
+$ DRY_RUN=1 ./scripts/drain-dr-queue.py
+큐 ota:dr:report_queue: 3건 (DRY_RUN: 쓰기/삭제 없음)
+  예: {"device_id": "e2e-probe", "target_version": "e2e", "status": "SUCCESS", "duration_ms": 1, "rssi": -50, "handled_by_cluster": "dr", "queued_at": 1795365388, "fa
+  예: {"device_id": "e2e-probe", "target_version": "e2e", "status": "SUCCESS", "duration_ms": 1, "rssi": -50, "handled_by_cluster": "dr", "queued_at": 1795365985, "fa
+  예: {"device_id": "verify-probe", "target_version": "0.0.0-verify", "status": "FAILED", "duration_ms": 1200, "rssi": -55, "error_code": "HASH_MISMATCH", "handled_by
+
+$ ./scripts/drain-dr-queue.py
+큐 ota:dr:report_queue: 3건
+완료: 읽음 3 = 신규 반영 3 + 중복 건너뜀 0 + dead-letter 0 | 큐 남은 0
+
+$ docker exec ota-postgres psql ... WHERE device_id='verify-probe'
+  device_id   | target_version | status |  error_code
+--------------+----------------+--------+---------------
+ verify-probe | 0.0.0-verify   | FAILED | HASH_MISMATCH
+(1 row)
+
+  device_id   | current_version
+--------------+-----------------
+ verify-probe |
+(1 row)
+
+# 정리(verify-probe)
+DELETE 1
+DELETE 1
+
+############ 4. 의도하지 않은 반영과 정리 ############
+# DRY_RUN 과 실제 실행을 한 블록으로 붙여넣어 e2e-probe 2건도 운영 DB에 반영되었다.
+# 반영된 행을 조회하고, 그 두 행(deployment_id 13, 14)만 지웠다.
+$ docker exec ota-postgres psql -U ota_admin -d ota_db -c "SELECT deployment_id,device_id,target_version,status,completed_at FROM ota_deployment_history WHERE device_id='e2e-probe' ORDER BY deployment_id;" -c "SELECT device_id,current_version FROM devices WHERE device_id='e2e-probe';"
+ deployment_id | device_id | target_version | status  |      completed_at
+---------------+-----------+----------------+---------+------------------------
+            13 | e2e-probe | e2e            | SUCCESS | 2026-11-23 01:36:28+09
+            14 | e2e-probe | e2e            | SUCCESS | 2026-11-23 01:46:25+09
+(2 rows)
+
+ device_id | current_version
+-----------+-----------------
+ e2e-probe | e2e
+(1 row)
+
+# (첫 삭제 시도는 자리표시자 `<…>` 오타로 구문 오류가 났고, 기기 행 삭제문은 안전장치(이력이 남아 있으면 삭제 안 함)로 DELETE 0 이었다.)
+$ docker exec ota-postgres psql -U ota_admin -d ota_db \
+    -c "DELETE FROM ota_deployment_history WHERE deployment_id IN (13, 14) AND device_id='e2e-probe';" \
+    -c "DELETE FROM devices WHERE device_id='e2e-probe' AND NOT EXISTS (SELECT 1 FROM ota_deployment_history h WHERE h.device_id='e2e-probe');" \
+    -c "SELECT count(*) AS e2e_probe_history FROM ota_deployment_history WHERE device_id='e2e-probe';" \
+    -c "SELECT count(*) AS e2e_probe_device FROM devices WHERE device_id='e2e-probe';"
+DELETE 2
+DELETE 1
+ e2e_probe_history
+-------------------
+                 0
+(1 row)
+
+ e2e_probe_device
+------------------
+                0
+(1 row)

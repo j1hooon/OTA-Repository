@@ -95,9 +95,11 @@
   - 실패·롤백 보고는 기기의 현재 버전을 바꾸지 않음(기존에는 모든 보고가 `current_version`을 갱신). `scripts/drain-dr-queue.py`도 같은 규칙을 따르고, 검증 도입 전에 쌓인 `FAILED_<사유>` 이벤트를 dead-letter로 보내지 않고 정규화해서 반영.
 - **시험**
   - `tests/test_report_api.py`(8개): `main.py`에서 모델과 큐 함수를 추출해 실제 Redis(`redis-server`)로 실행. 입력 거절 10종, 정규화, 상한 경계(상한 3: 1·2·3 적재 후 거절 2건, 큐 길이 3 유지), 드레인 후 재적재. 상한 비교를 `>`로 바꾸거나 상태 패턴을 느슨하게 만드는 변이를 주면 시험이 실패하는 것을 확인했습니다. CI(`validate.yml`)는 배포 이미지와 같은 pydantic 2.6.4로 실행합니다.
+  - 배포 후 확인(2026-11-26, 로그 `api-validation/verification.log`): 온프레미스(Active)에서 잘못된 `status`는 422, `FAILED_HASH_MISMATCH`는 `RECORDED_IN_DB`로 `FAILED` + `error_code=HASH_MISMATCH`가 기록되고 `devices.current_version`은 비어 있음. DR에서 `/health`는 `"cluster":"dr"`, 보고는 `QUEUED_IN_REDIS_AOF`(읽기 전용 DB 경로 유지), 잘못된 `status`는 422. 수정된 드레인으로 DR 큐 3건(신규 형식 1건, 검증 도입 전 형식 2건)을 운영 DB에 반영, 중복 0, dead-letter 0, 큐 잔여 0. GitHub Actions `validate`의 6개 작업이 모두 성공으로 표시됨(Actions 탭에서 확인).
   - SQL: `main.py`에서 추출한 실제 문장을 PostgreSQL 16에 실행해, 실패 보고가 CHECK 위반 없이 기록되고 `error_code`가 저장되며 기기 버전이 유지됨을 확인. 드레인은 실제 PostgreSQL 16과 Redis 7로 신규 3 + 중복 1 + dead-letter 1, 정규화 2 + dead-letter 2(알 수 없는 상태값, JSON 아님)를 확인.
 - **한계**
-  - 위 시험은 개발 환경에서 돌렸고 로그는 보관하지 않았습니다(`tests/`는 재현 가능). FastAPI 앱 전체와 K3s 클러스터에 배포한 상태의 시험은 **아직 하지 않았습니다**.
+  - 개발 환경에서 돌린 시험(단위·SQL·드레인)의 로그는 보관하지 않았습니다(`tests/`는 재현 가능). 클러스터 확인은 온프레미스 Active와 DR에서 각 1회입니다. 입력 거절은 `PWNED` 상태값(422)만, 클러스터에 직접 보낸 정상 보고는 `FAILED_HASH_MISMATCH` 1건만 확인했고, 65자 `device_id` 거절과 큐 상한(429)은 클러스터에서 시험하지 않았습니다. Standby 클러스터에는 직접 요청하지 않았습니다.
+  - **시험 데이터 혼입 사고**: 드레인 시험 때 DRY_RUN과 실제 실행을 한 블록으로 붙여넣어, 11/23 측정이 DR 큐에 남긴 `e2e-probe` 이벤트 2건이 운영 DB에 반영되었습니다. 조회해서 그 두 행만 삭제했고(로그 4절), 삭제 후 `e2e-probe` 이력과 기기 행은 0건입니다. 측정 후에는 DR 큐에 남은 시험 이벤트를 확인하고 정리하는 절차가 필요합니다.
   - 큐 상한이 DR 자원을 보호한다는 것을 부하로 확인하지는 않았습니다(상한 로직만 시험).
   - DB 예외를 모두 큐 보관으로 처리하는 구조는 유지했습니다(DR 복제본의 읽기 전용 오류 경로를 실제 psycopg2로 시험할 수 없어서). 입력 검증으로 알려진 원인은 줄였지만, 그 밖의 DB 오류도 큐로 갑니다.
   - 인증이 없는 한계는 그대로입니다. 완화일 뿐입니다.
