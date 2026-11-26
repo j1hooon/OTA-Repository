@@ -71,10 +71,10 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y redis-server
       - run: python -m unittest discover -s tests -v
 
-  # 처음에는 보고용이다. 위반을 정리한 뒤 continue-on-error 를 지우면 차단 검사가 된다.
+  # 차단 검사다. 알려진 위반은 .ansible-lint 의 warn_list 에 사유와 함께 적어 경고로만 표시하고,
+  # 그 밖의 규칙을 새로 위반하면 실패한다.
   ansible-lint:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
